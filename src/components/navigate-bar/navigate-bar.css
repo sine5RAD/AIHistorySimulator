@@ -1,0 +1,51 @@
+#nav-menu {
+  margin-left: 0rpx;
+  width: 100%;
+  height: 64px;
+  display: flex;
+  align-items: center;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1000;
+  background: var(--color-background, #fff);
+  border-bottom: 1px solid #d9d9d9;
+}
+#nav-menu #nav-menu-left {
+  display: flex;
+  align-items: center;
+  width: 50%;
+}
+#nav-menu #nav-menu-right {
+  display: flex;
+  align-items: center;
+  width: 50%;
+  justify-content: flex-end;
+  gap: 12px;
+}
+#nav-menu #nav-menu-left > a {
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  height: 100%;
+  cursor: pointer;
+}
+.nav-item {
+  display: flex;
+  align-items: center;
+  height: 100%;
+  padding: 0 16px;
+}
+.logo {
+  width: 56px;
+  height: 56px;
+  margin-right: 8px;
+  align-self: center;
+}
+
+.real-clock {
+  padding-right: 16px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
