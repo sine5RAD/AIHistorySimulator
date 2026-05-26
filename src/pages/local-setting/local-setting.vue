@@ -8,7 +8,11 @@ import {
   timezoneOptions,
 } from '../../composables/timezone'
 import { useAiSettings } from '@/composables/ai-settings'
-import { defaultTextToJsonPrompt } from '@/composables/prompt-defaults'
+import {
+  defaultEventDrivePrompt,
+  defaultImportWorldPrompt,
+  defaultTextToJsonPrompt,
+} from '@/composables/prompt-defaults'
 
 const { apiValue, modelOptions, providerOptions, saveAiSettings, selectedModel, selectedProvider } =
   useAiSettings()
@@ -23,11 +27,6 @@ const eventDrivePrompt = ref('')
 const textToJsonPromptRef = ref<HTMLTextAreaElement | null>(null)
 const importWorldPromptRef = ref<HTMLTextAreaElement | null>(null)
 const eventDrivePromptRef = ref<HTMLTextAreaElement | null>(null)
-
-const defaultImportWorldPrompt =
-  '请将以下信息导入当前世界观：提取关键实体、设定、关系与重要时间点，并在后续调用中记住这些设定。'
-const defaultEventDrivePrompt =
-  '基于当前世界观，生成下一步事件，包含事件描述、触发原因、主要参与者与可能后果，输出结构化要点列表。'
 
 function savePrompts() {
   try {
