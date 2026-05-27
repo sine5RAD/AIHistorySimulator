@@ -6,6 +6,9 @@ import type { CountryData, Party } from '../../types/country'
 
 const worldData = ref<WorldData>(createEmptyWorldData())
 const countryJsonError = ref('')
+const worldJsonError = ref('')
+const countryJsonInput = ref<HTMLInputElement | null>(null)
+const worldJsonInput = ref<HTMLInputElement | null>(null)
 const SESSION_DRAFT_KEY = 'worldDataDraft'
 const currentCountryIndex = ref(0)
 const currentCountry = computed(
@@ -196,6 +199,46 @@ const handleCountryJsonImport = async (e: Event) => {
   }
 }
 
+const handleWorldJsonImport = async (e: Event) => {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  worldJsonError.value = ''
+
+  if (!file) return
+
+  try {
+    const text = await file.text()
+    const parsed = JSON.parse(text) as unknown
+
+    const nextWorldData = createEmptyWorldData()
+
+    if (Array.isArray(parsed)) {
+      nextWorldData.countries = normalizeCountries(parsed)
+    } else if (parsed && typeof parsed === 'object') {
+      const maybeWorld = parsed as { countries?: unknown; worldMapImage?: unknown }
+
+      if (Array.isArray(maybeWorld.countries)) {
+        nextWorldData.countries = normalizeCountries(maybeWorld.countries)
+      }
+
+      if (typeof maybeWorld.worldMapImage === 'string') {
+        nextWorldData.worldMapImage = maybeWorld.worldMapImage
+      }
+    }
+
+    if (!nextWorldData.countries.length && !nextWorldData.worldMapImage) {
+      worldJsonError.value = 'JSON 内容为空或格式不正确。'
+      return
+    }
+
+    worldData.value = nextWorldData
+    input.value = ''
+  } catch (error) {
+    worldJsonError.value = '世界观 JSON 读取失败，请确认文件内容是有效的 JSON。'
+    console.error('Failed to import world json', error)
+  }
+}
+
 const removeCountry = (index: number) => {
   worldData.value.countries.splice(index, 1)
 }
@@ -300,6 +343,20 @@ const downloadCountryJson = (country: CountryData) => {
   window.URL.revokeObjectURL(url)
 }
 
+const downloadCountryListJson = () => {
+  const json = JSON.stringify(worldData.value.countries, null, 2)
+  const blob = new Blob([json], { type: 'application/json;charset=utf-8' })
+  const url = window.URL.createObjectURL(blob)
+  const a = document.createElement('a')
+
+  a.href = url
+  a.download = 'countries.json'
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  window.URL.revokeObjectURL(url)
+}
+
 const downloadWorldJson = () => {
   const json = JSON.stringify(worldData.value, null, 2)
   const blob = new Blob([json], { type: 'application/json;charset=utf-8' })
@@ -312,6 +369,18 @@ const downloadWorldJson = () => {
   a.click()
   a.remove()
   window.URL.revokeObjectURL(url)
+}
+
+const triggerCountryJsonImport = () => {
+  countryJsonInput.value?.click()
+}
+
+const triggerSingleCountryJsonImport = () => {
+  countryJsonInput.value?.click()
+}
+
+const triggerWorldJsonImport = () => {
+  worldJsonInput.value?.click()
 }
 
 onMounted(() => {
@@ -400,7 +469,13 @@ const nextCountry = () => {
 
 <template>
   <main class="page-shell">
-    <h1>世界生成</h1>
+    <div class="page-title-row">
+      <h1>世界生成</h1>
+      <div class="title-actions">
+        <button type="button" @click="triggerWorldJsonImport">导入世界观 JSON</button>
+        <button type="button" @click="downloadWorldJson">导出世界观 JSON</button>
+      </div>
+    </div>
 
     <section class="panel">
       <label class="label">上传世界地图（PNG/JPEG）</label>
@@ -412,16 +487,36 @@ const nextCountry = () => {
     </section>
 
     <section class="panel">
-      <h2>国家</h2>
-      <label class="label" for="country-json-upload">导入国家 JSON</label>
+      <div class="panel-title-row">
+        <h2>国家</h2>
+        <div class="title-actions">
+          <button type="button" @click="triggerCountryJsonImport">导入国家列表 JSON</button>
+          <button type="button" @click="downloadCountryListJson">导出国家列表 JSON</button>
+        </div>
+      </div>
       <input
-        id="country-json-upload"
+        ref="countryJsonInput"
+        hidden
         type="file"
         accept="application/json,.json"
         @change="handleCountryJsonImport"
       />
-      <button type="button" @click="downloadWorldJson">导出国家列表 JSON</button>
+      <input
+        ref="worldJsonInput"
+        hidden
+        type="file"
+        accept="application/json,.json"
+        @change="handleWorldJsonImport"
+      />
       <p v-if="countryJsonError" class="error-text">{{ countryJsonError }}</p>
+      <p v-if="worldJsonError" class="error-text">{{ worldJsonError }}</p>
+
+      <div class="country-export-row">
+        <button type="button" @click="triggerSingleCountryJsonImport">导入单个国家 JSON</button>
+        <button type="button" @click="downloadCountryJson(currentCountry)">
+          导出单个国家 JSON
+        </button>
+      </div>
 
       <div class="country-list">
         <div class="country-pagination-controls">
@@ -461,7 +556,6 @@ const nextCountry = () => {
               />
             </div>
             <div class="country-actions">
-              <button type="button" @click="downloadCountryJson(currentCountry)">导出 JSON</button>
               <button type="button" @click="removeCountry(currentCountryIndex)">删除</button>
             </div>
           </div>
@@ -1030,6 +1124,23 @@ const nextCountry = () => {
 <style scoped>
 .page-shell {
   padding: 24px;
+}
+
+.page-title-row,
+.panel-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.title-actions,
+.country-actions,
+.country-export-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .panel {
