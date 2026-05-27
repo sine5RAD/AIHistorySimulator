@@ -3,6 +3,8 @@ import { ref, onMounted, onBeforeUnmount, watch, computed, nextTick } from 'vue'
 
 import { createEmptyWorldData, type WorldData } from '@/types/world'
 import type { CountryData, Party } from '../../types/country'
+import type { LandData } from '@/types/land'
+import { createEmptyLandData } from '@/types/land'
 
 const worldData = ref<WorldData>(createEmptyWorldData())
 const countryJsonError = ref('')
@@ -33,7 +35,238 @@ const currentCountryIndex = ref(0)
 const currentCountry = computed(
   () => worldData.value.countries[currentCountryIndex.value] ?? createNormalizedCountry(),
 )
+const currentCountryLand = computed(() => {
+  const key = currentCountry.value.国家名称.trim()
+  return key ? (landMap.value[key] ?? null) : null
+})
+const currentCountryColor = computed(() => getCountryColor(currentCountry.value.国家名称))
+const countryColorEntries = computed(() => Object.entries(countryColorMap.value))
 let globeRenderToken = 0
+
+// 国土映射：国家名称 -> 国土数据（独立于国家数据）
+const landMap = ref<Record<string, LandData>>({})
+// 国家颜色映射：国家名称 -> 颜色（hex / css color）
+const countryColorMap = ref<Record<string, string>>({})
+
+const hashCountryName = (countryName: string) => {
+  let hash = 0
+  for (let i = 0; i < countryName.length; i += 1) {
+    hash = (hash * 31 + countryName.charCodeAt(i)) >>> 0
+  }
+  return hash
+}
+
+const createCountryColor = (countryName: string) => {
+  const normalized = countryName.trim()
+  if (!normalized) return 'rgba(120,120,120,0.8)'
+
+  const hash = hashCountryName(normalized)
+  const hue = hash % 360
+  const saturation = 55 + (hash % 20)
+  const lightness = 45 + (hash % 10)
+  return `hsl(${hue} ${saturation}% ${lightness}%)`
+}
+
+const withColorAlpha = (color: string, alpha: number) => {
+  const clampedAlpha = Math.max(0, Math.min(1, alpha))
+  if (color.startsWith('hsl(')) {
+    return color.replace(/^hsl\((.*)\)$/, `hsla($1 / ${clampedAlpha})`)
+  }
+  if (color.startsWith('rgb(')) {
+    return color.replace(/^rgb\((.*)\)$/, `rgba($1, ${clampedAlpha})`)
+  }
+  if (color.startsWith('#')) {
+    return color
+  }
+  return color
+}
+
+type RgbColor = { r: number; g: number; b: number }
+
+const colorParserCanvas = document.createElement('canvas')
+const colorParserContext = colorParserCanvas.getContext('2d')
+
+const clampRgbChannel = (value: number) => Math.max(0, Math.min(255, Math.round(value)))
+
+const parseCssColorToRgb = (color: string): RgbColor => {
+  if (!colorParserContext) {
+    return { r: 120, g: 120, b: 120 }
+  }
+
+  colorParserContext.fillStyle = '#000000'
+  colorParserContext.fillStyle = color
+  const normalized = colorParserContext.fillStyle
+
+  const rgbMatch = normalized.match(/^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i)
+  if (rgbMatch) {
+    return {
+      r: clampRgbChannel(Number(rgbMatch[1])),
+      g: clampRgbChannel(Number(rgbMatch[2])),
+      b: clampRgbChannel(Number(rgbMatch[3])),
+    }
+  }
+
+  const hexMatch = normalized.match(/^#([0-9a-f]{6})$/i)
+  if (hexMatch) {
+    const hex = hexMatch[1] ?? ''
+    if (hex.length !== 6) {
+      return { r: 120, g: 120, b: 120 }
+    }
+    return {
+      r: Number.parseInt(hex.slice(0, 2), 16),
+      g: Number.parseInt(hex.slice(2, 4), 16),
+      b: Number.parseInt(hex.slice(4, 6), 16),
+    }
+  }
+
+  return { r: 120, g: 120, b: 120 }
+}
+
+const currentCountryColorRgb = computed(() => parseCssColorToRgb(currentCountryColor.value))
+
+const updateCurrentCountryColorChannel = (channel: 'r' | 'g' | 'b', value: number) => {
+  const countryName = currentCountry.value.国家名称.trim()
+  if (!countryName) return
+
+  const nextRgb = { ...currentCountryColorRgb.value, [channel]: clampRgbChannel(value) }
+  setCountryColor(countryName, `rgb(${nextRgb.r}, ${nextRgb.g}, ${nextRgb.b})`)
+  scheduleRenderWorldGlobe()
+}
+
+const setCountryLand = (countryName: string, land: LandData) => {
+  if (!countryName) return
+  landMap.value[countryName.trim()] = land
+}
+
+const getCountryLand = (countryName: string): LandData => {
+  const key = (countryName || '').trim()
+  if (!key) return createEmptyLandData()
+  let existing = landMap.value[key]
+  if (!existing) {
+    existing = createEmptyLandData()
+    landMap.value[key] = existing
+  }
+  return existing
+}
+
+const peekCountryLand = (countryName: string): LandData | null => {
+  const key = (countryName || '').trim()
+  return key ? (landMap.value[key] ?? null) : null
+}
+
+const removeCountryLand = (countryName: string) => {
+  if (!countryName) return
+  delete landMap.value[countryName.trim()]
+}
+
+const listCountryLands = () => ({ ...landMap.value })
+
+type WorldDraft = {
+  countries?: unknown
+  worldMapImage?: unknown
+  landMap?: unknown
+  countryColorMap?: unknown
+}
+
+const saveWorldDraft = () => {
+  try {
+    window.sessionStorage.setItem(
+      SESSION_DRAFT_KEY,
+      JSON.stringify({
+        ...worldData.value,
+        landMap: listCountryLands(),
+        countryColorMap: { ...countryColorMap.value },
+      }),
+    )
+  } catch (err) {
+    console.error('Failed to save world draft to sessionStorage', err)
+  }
+}
+
+const restoreWorldDraft = (draft: unknown) => {
+  if (!isRecord(draft)) return
+
+  const draftCountries = getProp(draft, 'countries')
+  if (Array.isArray(draftCountries)) {
+    const normalized = normalizeCountries(draftCountries)
+    if (normalized.length) {
+      upsertCountries(normalized)
+    }
+  }
+
+  const mapImg = getProp(draft, 'worldMapImage')
+  if (typeof mapImg === 'string') {
+    worldData.value.worldMapImage = mapImg
+  }
+
+  if (isRecord((draft as WorldDraft).landMap)) {
+    const savedLandMap = (draft as WorldDraft).landMap as Record<string, unknown>
+    for (const [countryName, landValue] of Object.entries(savedLandMap)) {
+      if (!isRecord(landValue) || !Array.isArray((landValue as { areas?: unknown }).areas)) continue
+      const savedAreas = (landValue as { areas: unknown[] }).areas
+      const areas = savedAreas
+        .map((area: unknown) => {
+          if (!isRecord(area) || !Array.isArray((area as { vertices?: unknown }).vertices)) {
+            return null
+          }
+          const savedVertices = (area as { vertices: unknown[] }).vertices
+          const vertices = savedVertices
+            .filter(
+              (vertex: unknown): vertex is [number, number] =>
+                Array.isArray(vertex) && vertex.length >= 2,
+            )
+            .map(
+              (vertex: [number, number]) =>
+                [Number(vertex[0]), Number(vertex[1])] as [number, number],
+            )
+          return vertices.length ? { vertices } : null
+        })
+        .filter((area): area is { vertices: [number, number][] } => !!area)
+
+      if (areas.length) {
+        setCountryLand(countryName, { areas })
+      }
+    }
+  }
+
+  if (isRecord((draft as WorldDraft).countryColorMap)) {
+    const savedCountryColorMap = (draft as WorldDraft).countryColorMap as Record<string, unknown>
+    for (const [countryName, colorValue] of Object.entries(savedCountryColorMap)) {
+      if (typeof colorValue === 'string' && colorValue.trim()) {
+        setCountryColor(countryName, colorValue)
+      }
+    }
+  }
+}
+
+const setCountryColor = (countryName: string, color: string) => {
+  const key = countryName.trim()
+  if (!key) return
+  countryColorMap.value[key] = color
+}
+
+const getCountryColor = (countryName: string): string => {
+  const key = countryName.trim()
+  if (!key) return 'rgba(120,120,120,0.8)'
+
+  const existing = countryColorMap.value[key]
+  if (existing) return existing
+
+  const nextColor = createCountryColor(key)
+  countryColorMap.value[key] = nextColor
+  return nextColor
+}
+
+const peekCountryColor = (countryName: string): string | null => {
+  const key = (countryName || '').trim()
+  return key ? (countryColorMap.value[key] ?? null) : null
+}
+
+const removeCountryColor = (countryName: string) => {
+  const key = countryName.trim()
+  if (!key) return
+  delete countryColorMap.value[key]
+}
 
 const isRecord = (v: unknown) => !!v && typeof v === 'object' && !Array.isArray(v)
 const getProp = (obj: unknown, key: string): unknown =>
@@ -137,6 +370,358 @@ const createNormalizedCountryFromUnknown = (value: unknown) => {
   }
 
   return createNormalizedCountry(value as Partial<CountryData>)
+}
+
+// ---- 国土编辑状态与工具 ----
+const isEditingLand = ref(false)
+const editingPins = ref<{ u: number; v: number; sx: number; sy: number }[]>([])
+
+// 在画布屏幕坐标 -> 纹理坐标 (u,v) 的映射（与 renderWorldGlobe 使用的计算保持一致）
+const canvasPixelToUV = (canvasX: number, canvasY: number) => {
+  const canvas = globeCanvas.value
+  if (!canvas) return null
+
+  const width = canvas.width
+  const height = canvas.height
+  const centerX = width / 2
+  const centerY = height / 2
+  const radius = Math.min(width, height) * 0.42
+
+  const normalizedX = (canvasX - centerX) / radius
+  const normalizedY = (centerY - canvasY) / radius
+  const distanceSquared = normalizedX * normalizedX + normalizedY * normalizedY
+  if (distanceSquared > 1) return null
+
+  const normalizedZ = Math.sqrt(1 - distanceSquared)
+  const yaw = rotation.value
+  const pitch = tilt.value
+  const cosYaw = Math.cos(yaw)
+  const sinYaw = Math.sin(yaw)
+  const cosPitch = Math.cos(pitch)
+  const sinPitch = Math.sin(pitch)
+
+  const rotatedY = normalizedY * cosPitch - normalizedZ * sinPitch
+  const pitchZ = normalizedY * sinPitch + normalizedZ * cosPitch
+  const rotatedX = normalizedX * cosYaw + pitchZ * sinYaw
+  const rotatedZ = -normalizedX * sinYaw + pitchZ * cosYaw
+
+  const latitude = Math.asin(Math.max(-1, Math.min(1, rotatedY)))
+  const longitude = Math.atan2(rotatedX, rotatedZ)
+  const clampedLatitude = Math.max(-maxMercatorLatitude, Math.min(maxMercatorLatitude, latitude))
+  const mercatorY = 0.5 - Math.log(Math.tan(Math.PI / 4 + clampedLatitude / 2)) / (2 * Math.PI)
+  const u = (longitude + Math.PI) / (2 * Math.PI)
+  const v = clamp01(mercatorY)
+
+  return { u, v }
+}
+
+// 画布点击处理：放置图钉或结束编辑
+const onCanvasPlacePin = (clientX: number, clientY: number) => {
+  const canvas = globeCanvas.value
+  if (!canvas) return
+  const rect = canvas.getBoundingClientRect()
+  const sx = Math.round(clientX - rect.left)
+  const sy = Math.round(clientY - rect.top)
+  const uv = canvasPixelToUV(sx, sy)
+  if (!uv) return
+
+  // 如果点击靠近第一个图钉，则认为关闭多边形并尝试保存
+  if (editingPins.value.length > 0) {
+    const first = editingPins.value[0]
+    if (first) {
+      const dx = sx - first.sx
+      const dy = sy - first.sy
+      const dist2 = dx * dx + dy * dy
+      if (dist2 < 20 * 20) {
+        // 结束编辑
+        finishEditingPolygon()
+        return
+      }
+    }
+  }
+
+  editingPins.value.push({ u: uv.u, v: uv.v, sx, sy })
+  scheduleRenderWorldGlobe()
+}
+
+const finishEditingPolygon = () => {
+  if (editingPins.value.length < 3) {
+    // 不足以形成多边形
+    editingPins.value = []
+    isEditingLand.value = false
+    scheduleRenderWorldGlobe()
+    return
+  }
+
+  const polygon: [number, number][] = editingPins.value.map((p) => [p.u, p.v])
+  // 检查与现有区域是否重合（若任一顶点在对方内则判定为重合）
+  const countryName = currentCountry.value?.国家名称?.trim() || ''
+  if (!countryName) {
+    alert('请选择国家后再添加国土')
+    editingPins.value = []
+    isEditingLand.value = false
+    return
+  }
+
+  const existingLand = landMap.value[countryName]
+  let overlap = false
+  if (existingLand && existingLand.areas.length) {
+    for (const area of existingLand.areas) {
+      if (polygonsOverlap(polygon, area.vertices)) {
+        overlap = true
+        break
+      }
+    }
+  }
+
+  if (overlap) {
+    alert('新增国土与现有国土存在重合，操作已取消')
+    editingPins.value = []
+    isEditingLand.value = false
+    scheduleRenderWorldGlobe()
+    return
+  }
+
+  // 添加到国土
+  const land = getCountryLand(countryName)
+  land.areas.push({ vertices: polygon })
+  setCountryLand(countryName, land)
+
+  editingPins.value = []
+  isEditingLand.value = false
+  scheduleRenderWorldGlobe()
+}
+
+// 简单的点-in-多边形（uv 空间）
+const pointInPolygon = (pt: [number, number], poly: [number, number][]) => {
+  const x = pt[0]
+  const y = pt[1]
+  let inside = false
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const pi = poly[i]
+    const pj = poly[j]
+    if (!pi || !pj) continue
+    const xi = pi[0]
+    const yi = pi[1]
+    const xj = pj[0]
+    const yj = pj[1]
+
+    const intersect = yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi + 0.0) + xi
+    if (intersect) inside = !inside
+  }
+  return inside
+}
+
+const bboxOf = (poly: [number, number][]) => {
+  let minx = Infinity
+  let miny = Infinity
+  let maxx = -Infinity
+  let maxy = -Infinity
+  for (const [x, y] of poly) {
+    if (x < minx) minx = x
+    if (y < miny) miny = y
+    if (x > maxx) maxx = x
+    if (y > maxy) maxy = y
+  }
+  return { minx, miny, maxx, maxy }
+}
+
+const bboxOverlap = (a: ReturnType<typeof bboxOf>, b: ReturnType<typeof bboxOf>) =>
+  !(a.maxx < b.minx || a.minx > b.maxx || a.maxy < b.miny || a.miny > b.maxy)
+
+const polygonsOverlap = (a: [number, number][], b: [number, number][]) => {
+  const bboxA = bboxOf(a)
+  const bboxB = bboxOf(b)
+  if (!bboxOverlap(bboxA, bboxB)) return false
+
+  // 检查任一顶点在对方内
+  for (const p of a) if (pointInPolygon(p, b)) return true
+  for (const p of b) if (pointInPolygon(p, a)) return true
+  return false
+}
+
+type RotatedPoint = { x: number; y: number; z: number }
+
+const uvToRotatedPoint = (u: number, v: number): RotatedPoint => {
+  const longitude = u * 2 * Math.PI - Math.PI
+  const latitude = 2 * Math.atan(Math.exp((0.5 - v) * 2 * Math.PI)) - Math.PI / 2
+
+  const cosLat = Math.cos(latitude)
+  const sphereX = cosLat * Math.sin(longitude)
+  const sphereY = Math.sin(latitude)
+  const sphereZ = cosLat * Math.cos(longitude)
+
+  const yaw = rotation.value
+  const pitch = tilt.value
+  const cosYaw = Math.cos(yaw)
+  const sinYaw = Math.sin(yaw)
+  const cosPitch = Math.cos(-pitch)
+  const sinPitch = Math.sin(-pitch)
+
+  const x1 = cosYaw * sphereX + -sinYaw * sphereZ
+  const z1 = sinYaw * sphereX + cosYaw * sphereZ
+  const y1 = cosPitch * sphereY + -sinPitch * z1
+  const z2 = sinPitch * sphereY + cosPitch * z1
+
+  return { x: x1, y: y1, z: z2 }
+}
+
+const lerpRotatedPoint = (a: RotatedPoint, b: RotatedPoint, t: number): RotatedPoint => ({
+  x: a.x + (b.x - a.x) * t,
+  y: a.y + (b.y - a.y) * t,
+  z: a.z + (b.z - a.z) * t,
+})
+
+const normalizeRotatedPoint = (point: RotatedPoint): RotatedPoint => {
+  const length = Math.sqrt(point.x * point.x + point.y * point.y + point.z * point.z)
+  if (!Number.isFinite(length) || length === 0) {
+    return { x: 0, y: 0, z: 1 }
+  }
+
+  return {
+    x: point.x / length,
+    y: point.y / length,
+    z: point.z / length,
+  }
+}
+
+const slerpRotatedPoint = (a: RotatedPoint, b: RotatedPoint, t: number): RotatedPoint => {
+  const start = normalizeRotatedPoint(a)
+  const end = normalizeRotatedPoint(b)
+  const dot = Math.max(-1, Math.min(1, start.x * end.x + start.y * end.y + start.z * end.z))
+  const omega = Math.acos(dot)
+
+  if (omega < 1e-6) {
+    return normalizeRotatedPoint(lerpRotatedPoint(start, end, t))
+  }
+
+  const sinOmega = Math.sin(omega)
+  const scaleA = Math.sin((1 - t) * omega) / sinOmega
+  const scaleB = Math.sin(t * omega) / sinOmega
+
+  return normalizeRotatedPoint({
+    x: start.x * scaleA + end.x * scaleB,
+    y: start.y * scaleA + end.y * scaleB,
+    z: start.z * scaleA + end.z * scaleB,
+  })
+}
+
+const projectRotatedPointToHorizon = (point: RotatedPoint): RotatedPoint => {
+  const horizontalLength = Math.sqrt(point.x * point.x + point.y * point.y)
+  if (!Number.isFinite(horizontalLength) || horizontalLength === 0) {
+    return { x: 0, y: 0, z: 0 }
+  }
+
+  return {
+    x: point.x / horizontalLength,
+    y: point.y / horizontalLength,
+    z: 0,
+  }
+}
+
+const buildCurvedPolygonPoints = (points: RotatedPoint[], segmentsPerEdge = 12) => {
+  if (points.length < 2) return [] as RotatedPoint[]
+
+  const result: RotatedPoint[] = []
+  for (let i = 0; i < points.length; i += 1) {
+    const current = points[i]
+    const next = points[(i + 1) % points.length]
+    if (!current || !next) continue
+
+    if (i === 0) {
+      result.push(normalizeRotatedPoint(current))
+    }
+
+    for (let step = 1; step <= segmentsPerEdge; step += 1) {
+      const t = step / segmentsPerEdge
+      result.push(slerpRotatedPoint(current, next, t))
+    }
+  }
+
+  return result
+}
+
+// 将多边形裁剪到前半球（z >= 0），让被地平线遮挡的部分也能沿地平线补齐渲染
+const clipPolygonToFrontHemisphere = (points: RotatedPoint[]) => {
+  if (points.length < 3) return [] as RotatedPoint[]
+
+  const epsilon = 1e-6
+  const horizonSegments = 16
+
+  const isInside = (point: RotatedPoint) => point.z >= -epsilon
+
+  const addHorizonArc = (result: RotatedPoint[], from: RotatedPoint, to: RotatedPoint) => {
+    const fromAngle = Math.atan2(from.y, from.x)
+    const toAngle = Math.atan2(to.y, to.x)
+    let delta = toAngle - fromAngle
+
+    while (delta <= -Math.PI) delta += Math.PI * 2
+    while (delta > Math.PI) delta -= Math.PI * 2
+
+    if (Math.abs(delta) < 1e-6) {
+      return
+    }
+
+    for (let step = 1; step <= horizonSegments; step += 1) {
+      const t = step / horizonSegments
+      const angle = fromAngle + delta * t
+      result.push({ x: Math.cos(angle), y: Math.sin(angle), z: 0 })
+    }
+  }
+
+  const result: RotatedPoint[] = []
+  const startIndex = points.findIndex((point) => isInside(point))
+  if (startIndex < 0) {
+    return result
+  }
+
+  const startPoint = points[startIndex]
+  if (!startPoint) {
+    return result
+  }
+
+  result.push(normalizeRotatedPoint(startPoint))
+  let pendingExit: RotatedPoint | null = null
+
+  for (let offset = 1; offset <= points.length; offset += 1) {
+    const currentIndex = (startIndex + offset - 1) % points.length
+    const nextIndex = (startIndex + offset) % points.length
+    const current = points[currentIndex]
+    const next = points[nextIndex]
+    if (!current || !next) continue
+    const currentInside = isInside(current)
+    const nextInside = isInside(next)
+
+    if (currentInside && nextInside) {
+      if (nextIndex !== startIndex) {
+        result.push(normalizeRotatedPoint(next))
+      }
+      continue
+    }
+
+    if (currentInside && !nextInside) {
+      const t = current.z / (current.z - next.z)
+      const horizonPoint = projectRotatedPointToHorizon(lerpRotatedPoint(current, next, t))
+      result.push(horizonPoint)
+      pendingExit = horizonPoint
+      continue
+    }
+
+    if (!currentInside && nextInside) {
+      const t = current.z / (current.z - next.z)
+      const horizonPoint = projectRotatedPointToHorizon(lerpRotatedPoint(current, next, t))
+      if (pendingExit) {
+        addHorizonArc(result, pendingExit, horizonPoint)
+      }
+      result.push(horizonPoint)
+      if (nextIndex !== startIndex) {
+        result.push(normalizeRotatedPoint(next))
+      }
+      pendingExit = null
+    }
+  }
+
+  return result
 }
 
 const handleMapUpload = async (e: Event) => {
@@ -422,6 +1007,78 @@ const renderWorldGlobe = () => {
   }
 
   context.putImageData(pixels, 0, 0)
+
+  // 绘制所有国家的已存在区域：非选中国家为淡色，选中国家为强调色
+  const selCountryName = currentCountry.value?.国家名称?.trim() || ''
+  if (landMap.value && Object.keys(landMap.value).length) {
+    context.save()
+    context.lineWidth = 1.5
+    for (const [countryName, land] of Object.entries(landMap.value)) {
+      if (!land || !land.areas) continue
+      const isSelected = countryName === selCountryName
+      const countryColor = getCountryColor(countryName)
+      for (const area of land.areas) {
+        if (!area || !area.vertices || !area.vertices.length) continue
+        const rotatedPoints = area.vertices
+          .filter((vert): vert is [number, number] => !!vert)
+          .map(([u, v]) => uvToRotatedPoint(u, v))
+        const curvedPoints = buildCurvedPolygonPoints(rotatedPoints, 16)
+        const clippedPoints = clipPolygonToFrontHemisphere(curvedPoints)
+        if (clippedPoints.length < 3) continue
+
+        const centerX = canvas.width / 2
+        const centerY = canvas.height / 2
+        const radius = Math.min(canvas.width, canvas.height) * 0.42
+
+        context.beginPath()
+        for (let i = 0; i < clippedPoints.length; i += 1) {
+          const point = clippedPoints[i]
+          if (!point) continue
+          const sx = centerX + point.x * radius
+          const sy = centerY - point.y * radius
+          if (i === 0) {
+            context.moveTo(sx, sy)
+          } else {
+            context.lineTo(sx, sy)
+          }
+        }
+        context.closePath()
+
+        context.fillStyle = isSelected
+          ? withColorAlpha(countryColor, 0.22)
+          : withColorAlpha(countryColor, 0.2)
+        context.strokeStyle = isSelected
+          ? withColorAlpha(countryColor, 0.95)
+          : withColorAlpha(countryColor, 0.65)
+        context.lineWidth = isSelected ? 2 : 1
+        context.fill()
+        context.stroke()
+      }
+    }
+    context.restore()
+  }
+
+  // 绘制当前正在编辑的图钉与连线
+  if (isEditingLand.value && editingPins.value.length) {
+    context.save()
+    context.strokeStyle = 'rgba(40,120,240,0.95)'
+    context.fillStyle = 'rgba(40,120,240,0.95)'
+    context.lineWidth = 2
+    context.beginPath()
+    for (let i = 0; i < editingPins.value.length; i++) {
+      const p = editingPins.value[i]
+      if (!p) continue
+      if (i === 0) context.moveTo(p.sx, p.sy)
+      else context.lineTo(p.sx, p.sy)
+    }
+    context.stroke()
+    for (const p of editingPins.value) {
+      context.beginPath()
+      context.arc(p.sx, p.sy, 6, 0, Math.PI * 2)
+      context.fill()
+    }
+    context.restore()
+  }
 }
 
 const scheduleRenderWorldGlobe = () => {
@@ -437,8 +1094,33 @@ const scheduleRenderWorldGlobe = () => {
 
 // 鼠标/触控拖拽交互：更新 rotation 并重渲染
 const onPointerDown = (e: PointerEvent) => {
-  // 仅响应左键或触控
-  if (e.pointerType !== 'touch' && e.button !== 0) return
+  // 编辑模式：左键（或触控）放置图钉，右键继续拖拽地图
+  if (isEditingLand.value) {
+    if (!globeCanvas.value) return
+
+    if (e.pointerType !== 'touch' && e.button === 2) {
+      isDragging.value = true
+      dragStartX.value = e.clientX
+      dragStartY.value = e.clientY
+      startRotation.value = rotation.value
+      startTilt.value = tilt.value
+      activePointerId.value = e.pointerId
+
+      try {
+        globeCanvas.value.setPointerCapture(e.pointerId)
+      } catch {
+        // ignore
+      }
+      return
+    }
+
+    if (e.pointerType !== 'touch' && e.button !== 0) return
+    onCanvasPlacePin(e.clientX, e.clientY)
+    return
+  }
+
+  // 非编辑模式：仅响应右键或触控开始拖拽（将左键保留给编辑）
+  if (e.pointerType !== 'touch' && e.button !== 2) return
 
   if (!globeCanvas.value) return
 
@@ -499,28 +1181,46 @@ const attachGlobeListeners = (canvas: HTMLCanvasElement) => {
   canvas.addEventListener('pointermove', onPointerMove)
   canvas.addEventListener('pointerup', endPointerDrag)
   canvas.addEventListener('pointercancel', endPointerDrag)
+  // 禁止右键菜单以便使用右键拖拽
+  const ctxHandler = (ev: Event) => ev.preventDefault()
+  canvas.addEventListener('contextmenu', ctxHandler)
 
   removeGlobeListeners = () => {
     canvas.removeEventListener('pointerdown', onPointerDown)
     canvas.removeEventListener('pointermove', onPointerMove)
     canvas.removeEventListener('pointerup', endPointerDrag)
     canvas.removeEventListener('pointercancel', endPointerDrag)
+    canvas.removeEventListener('contextmenu', ctxHandler)
   }
 }
 
 const normalizeCountries = (data: unknown): CountryData[] => {
   if (Array.isArray(data)) {
-    return data.map((item) => createNormalizedCountryFromUnknown(item))
+    return data.map((item) => {
+      const country = createNormalizedCountryFromUnknown(item)
+      if (isRecord(item)) {
+        applyCountryMetadata(country.国家名称.trim(), item)
+      }
+      return country
+    })
   }
 
   if (data && typeof data === 'object') {
     const maybeWorld = data as { countries?: unknown }
 
     if (Array.isArray(maybeWorld.countries)) {
-      return maybeWorld.countries.map((item) => createNormalizedCountryFromUnknown(item))
+      return maybeWorld.countries.map((item) => {
+        const country = createNormalizedCountryFromUnknown(item)
+        if (isRecord(item)) {
+          applyCountryMetadata(country.国家名称.trim(), item)
+        }
+        return country
+      })
     }
 
-    return [createNormalizedCountryFromUnknown(data)]
+    const country = createNormalizedCountryFromUnknown(data)
+    applyCountryMetadata(country.国家名称.trim(), data)
+    return [country]
   }
 
   return []
@@ -591,7 +1291,12 @@ const handleWorldJsonImport = async (e: Event) => {
     if (Array.isArray(parsed)) {
       nextWorldData.countries = normalizeCountries(parsed)
     } else if (parsed && typeof parsed === 'object') {
-      const maybeWorld = parsed as { countries?: unknown; worldMapImage?: unknown }
+      const maybeWorld = parsed as {
+        countries?: unknown
+        worldMapImage?: unknown
+        landMap?: unknown
+        countryColorMap?: unknown
+      }
 
       if (Array.isArray(maybeWorld.countries)) {
         nextWorldData.countries = normalizeCountries(maybeWorld.countries)
@@ -599,6 +1304,45 @@ const handleWorldJsonImport = async (e: Event) => {
 
       if (typeof maybeWorld.worldMapImage === 'string') {
         nextWorldData.worldMapImage = maybeWorld.worldMapImage
+      }
+
+      if (isRecord(maybeWorld.landMap)) {
+        const savedLandMap = maybeWorld.landMap as Record<string, unknown>
+        for (const [countryName, landValue] of Object.entries(savedLandMap)) {
+          if (!isRecord(landValue) || !Array.isArray((landValue as { areas?: unknown }).areas))
+            continue
+          const savedAreas = (landValue as { areas: unknown[] }).areas
+          const areas = savedAreas
+            .map((area: unknown) => {
+              if (!isRecord(area) || !Array.isArray((area as { vertices?: unknown }).vertices))
+                return null
+              const savedVertices = (area as { vertices: unknown[] }).vertices
+              const vertices = savedVertices
+                .filter(
+                  (vertex: unknown): vertex is [number, number] =>
+                    Array.isArray(vertex) && vertex.length >= 2,
+                )
+                .map(
+                  (vertex: [number, number]) =>
+                    [Number(vertex[0]), Number(vertex[1])] as [number, number],
+                )
+              return vertices.length ? { vertices } : null
+            })
+            .filter((area): area is { vertices: [number, number][] } => !!area)
+
+          if (areas.length) {
+            setCountryLand(countryName, { areas })
+          }
+        }
+      }
+
+      if (isRecord(maybeWorld.countryColorMap)) {
+        const savedCountryColorMap = maybeWorld.countryColorMap as Record<string, unknown>
+        for (const [countryName, colorValue] of Object.entries(savedCountryColorMap)) {
+          if (typeof colorValue === 'string' && colorValue.trim()) {
+            setCountryColor(countryName, colorValue)
+          }
+        }
       }
     }
 
@@ -625,6 +1369,33 @@ const addStringItem = (items: string[]) => {
 
 const removeStringItem = (items: string[], index: number) => {
   items.splice(index, 1)
+}
+
+const startEditingLand = () => {
+  editingPins.value = []
+  isEditingLand.value = true
+  scheduleRenderWorldGlobe()
+}
+
+const cancelEditingLand = () => {
+  editingPins.value = []
+  isEditingLand.value = false
+  scheduleRenderWorldGlobe()
+}
+
+const removeArea = (index: number) => {
+  const countryName = currentCountry.value?.国家名称?.trim() || ''
+  if (!countryName) return
+  const land = peekCountryLand(countryName)
+  if (!land || !land.areas || index < 0 || index >= land.areas.length) return
+
+  const nextAreas = land.areas.filter((_, areaIndex) => areaIndex !== index)
+  if (!nextAreas.length) {
+    removeCountryLand(countryName)
+  } else {
+    setCountryLand(countryName, { ...land, areas: nextAreas })
+  }
+  scheduleRenderWorldGlobe()
 }
 
 const addRecordItem = (record: Record<string, string>, defaultKey: string) => {
@@ -657,6 +1428,74 @@ const renameRecordKey = (record: Record<string, string>, oldKey: string, event: 
 
 const setRecordValue = (record: Record<string, string>, key: string, event: Event) => {
   record[key] = (event.target as HTMLInputElement).value
+}
+
+type SerializableCountry = CountryData & {
+  land?: LandData
+  countryColor?: string
+}
+
+const serializeCountryForJson = (country: CountryData): SerializableCountry => {
+  const countryName = getCountryNameKey(country)
+  const land = peekCountryLand(countryName)
+  const countryColor = peekCountryColor(countryName) ?? getCountryColor(countryName)
+
+  return {
+    ...country,
+    ...(land ? { land } : {}),
+    ...(countryColor ? { countryColor } : {}),
+  }
+}
+
+const serializeWorldForJson = () => ({
+  ...worldData.value,
+  countries: worldData.value.countries.map((country) => serializeCountryForJson(country)),
+})
+
+const applyCountryMetadata = (countryName: string, value: unknown) => {
+  if (!value || typeof value !== 'object') return
+
+  const meta = value as { land?: unknown; countryColor?: unknown; color?: unknown }
+
+  if (meta.land && isRecord(meta.land)) {
+    const savedLand = meta.land as { areas?: unknown }
+    const areas = Array.isArray(savedLand.areas) ? savedLand.areas : []
+
+    const normalizedAreas = areas
+      .map((area: unknown) => {
+        if (!isRecord(area) || !Array.isArray((area as { vertices?: unknown }).vertices))
+          return null
+
+        const savedVertices = (area as { vertices: unknown[] }).vertices
+        const vertices = savedVertices
+          .filter(
+            (vertex: unknown): vertex is [number, number] =>
+              Array.isArray(vertex) && vertex.length >= 2,
+          )
+          .map(
+            (vertex: [number, number]) =>
+              [Number(vertex[0]), Number(vertex[1])] as [number, number],
+          )
+
+        return vertices.length ? { vertices } : null
+      })
+      .filter((area): area is { vertices: [number, number][] } => !!area)
+
+    if (normalizedAreas.length) {
+      setCountryLand(countryName, { areas: normalizedAreas })
+    }
+  }
+
+  const nextColor =
+    typeof meta.countryColor === 'string'
+      ? meta.countryColor
+      : typeof meta.color === 'string'
+        ? meta.color
+        : ''
+
+  if (nextColor) {
+    setCountryColor(countryName, nextColor)
+  }
 }
 
 const addCity = (country: CountryData) => {
@@ -706,7 +1545,7 @@ const createSafeFileName = (value: string) => {
 }
 
 const downloadCountryJson = (country: CountryData) => {
-  const json = JSON.stringify(country, null, 2)
+  const json = JSON.stringify(serializeCountryForJson(country), null, 2)
   const blob = new Blob([json], { type: 'application/json;charset=utf-8' })
   const url = window.URL.createObjectURL(blob)
   const a = document.createElement('a')
@@ -720,7 +1559,11 @@ const downloadCountryJson = (country: CountryData) => {
 }
 
 const downloadCountryListJson = () => {
-  const json = JSON.stringify(worldData.value.countries, null, 2)
+  const json = JSON.stringify(
+    worldData.value.countries.map((country) => serializeCountryForJson(country)),
+    null,
+    2,
+  )
   const blob = new Blob([json], { type: 'application/json;charset=utf-8' })
   const url = window.URL.createObjectURL(blob)
   const a = document.createElement('a')
@@ -734,7 +1577,15 @@ const downloadCountryListJson = () => {
 }
 
 const downloadWorldJson = () => {
-  const json = JSON.stringify(worldData.value, null, 2)
+  const json = JSON.stringify(
+    {
+      ...serializeWorldForJson(),
+      landMap: listCountryLands(),
+      countryColorMap: { ...countryColorMap.value },
+    },
+    null,
+    2,
+  )
   const blob = new Blob([json], { type: 'application/json;charset=utf-8' })
   const url = window.URL.createObjectURL(blob)
   const a = document.createElement('a')
@@ -764,22 +1615,7 @@ onMounted(() => {
   try {
     const draftJson = window.sessionStorage.getItem(SESSION_DRAFT_KEY)
     if (draftJson) {
-      const parsedDraft = JSON.parse(draftJson)
-      // apply draft: normalize countries and map image
-      if (isRecord(parsedDraft)) {
-        const draftCountries = getProp(parsedDraft, 'countries')
-        if (Array.isArray(draftCountries)) {
-          const normalized = normalizeCountries(draftCountries)
-          if (normalized.length) {
-            upsertCountries(normalized)
-          }
-        }
-
-        const mapImg = getProp(parsedDraft, 'worldMapImage')
-        if (mapImg) {
-          worldData.value.worldMapImage = String(mapImg)
-        }
-      }
+      restoreWorldDraft(JSON.parse(draftJson))
     }
   } catch (err) {
     console.error('Failed to load world draft from sessionStorage', err)
@@ -808,6 +1644,18 @@ onMounted(() => {
       attachGlobeListeners(globeCanvas.value)
     }
   })
+  // 暴露调试用的国土帮助函数到 window（便于在控制台调用）
+  try {
+    const win = window as unknown as { __landHelpers?: unknown }
+    win.__landHelpers = {
+      getCountryLand,
+      listCountryLands,
+      setCountryLand,
+      removeCountryLand,
+    }
+  } catch {
+    // ignore
+  }
 })
 
 onBeforeUnmount(() => {
@@ -818,17 +1666,11 @@ onBeforeUnmount(() => {
 })
 
 // 将 worldData 保存到 sessionStorage，以便在同一标签页内导航时保留
-watch(
-  worldData,
-  (next) => {
-    try {
-      window.sessionStorage.setItem(SESSION_DRAFT_KEY, JSON.stringify(next))
-    } catch (err) {
-      console.error('Failed to save world draft to sessionStorage', err)
-    }
-  },
-  { deep: true },
-)
+watch(worldData, () => saveWorldDraft(), { deep: true })
+
+watch(landMap, () => saveWorldDraft(), { deep: true })
+
+watch(countryColorMap, () => saveWorldDraft(), { deep: true })
 
 // 当国家数组变化时，修正 currentCountryIndex 的范围
 watch(
@@ -841,6 +1683,41 @@ watch(
 
     // 环绕计数以确保索引在有效范围内
     currentCountryIndex.value = ((currentCountryIndex.value % len) + len) % len
+  },
+)
+
+watch(
+  () => currentCountryIndex.value,
+  () => {
+    scheduleRenderWorldGlobe()
+  },
+)
+
+// 当国家列表变化时，同步 landMap：为新国家初始化空国土，移除已删除国家的映射
+watch(
+  () => worldData.value.countries.map((c) => c.国家名称?.trim() || ''),
+  (names) => {
+    const existingLandKeys = new Set(Object.keys(landMap.value))
+    const existingColorKeys = new Set(Object.keys(countryColorMap.value))
+    for (const name of names) {
+      if (!name) continue
+      existingLandKeys.delete(name)
+      existingColorKeys.delete(name)
+      if (!(name in landMap.value)) {
+        setCountryLand(name, createEmptyLandData())
+      }
+      if (!(name in countryColorMap.value)) {
+        setCountryColor(name, createCountryColor(name))
+      }
+    }
+
+    // 删除那些不再存在的键
+    for (const leftover of existingLandKeys) {
+      removeCountryLand(leftover)
+    }
+    for (const leftover of existingColorKeys) {
+      removeCountryColor(leftover)
+    }
   },
 )
 
@@ -896,7 +1773,149 @@ const nextCountry = () => {
       <input type="file" accept="image/*" @change="handleMapUpload" />
       <div v-if="worldData.worldMapImage" class="map-preview">
         <h3>球面预览</h3>
-        <canvas ref="globeCanvas" class="globe-canvas" width="720" height="720" />
+        <div class="map-preview-row" style="display: flex; gap: 16px; align-items: flex-start">
+          <div style="flex: 0 0 720px">
+            <canvas ref="globeCanvas" class="globe-canvas" width="720" height="720" />
+          </div>
+          <aside class="land-preview-card" style="flex: 1; min-width: 260px">
+            <h4>当前国家国土</h4>
+            <div v-if="!currentCountry || !currentCountry.国家名称">请选择一个国家以查看国土</div>
+            <div v-else>
+              <div style="margin-bottom: 8px">
+                <strong>{{ currentCountry.国家名称 }}</strong>
+              </div>
+              <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px">
+                <span
+                  :style="{
+                    width: '14px',
+                    height: '14px',
+                    borderRadius: '999px',
+                    background: currentCountryColor,
+                    border: '1px solid rgba(255,255,255,0.25)',
+                    display: 'inline-block',
+                  }"
+                />
+                <span>颜色：{{ currentCountryColor }}</span>
+              </div>
+              <div
+                style="
+                  display: grid;
+                  grid-template-columns: repeat(3, minmax(0, 1fr));
+                  gap: 8px;
+                  margin-bottom: 12px;
+                "
+              >
+                <label style="display: flex; flex-direction: column; gap: 4px">
+                  <span>R</span>
+                  <input
+                    type="number"
+                    min="0"
+                    max="255"
+                    :value="currentCountryColorRgb.r"
+                    @input="
+                      updateCurrentCountryColorChannel(
+                        'r',
+                        Number(($event.target as HTMLInputElement).value),
+                      )
+                    "
+                  />
+                </label>
+                <label style="display: flex; flex-direction: column; gap: 4px">
+                  <span>G</span>
+                  <input
+                    type="number"
+                    min="0"
+                    max="255"
+                    :value="currentCountryColorRgb.g"
+                    @input="
+                      updateCurrentCountryColorChannel(
+                        'g',
+                        Number(($event.target as HTMLInputElement).value),
+                      )
+                    "
+                  />
+                </label>
+                <label style="display: flex; flex-direction: column; gap: 4px">
+                  <span>B</span>
+                  <input
+                    type="number"
+                    min="0"
+                    max="255"
+                    :value="currentCountryColorRgb.b"
+                    @input="
+                      updateCurrentCountryColorChannel(
+                        'b',
+                        Number(($event.target as HTMLInputElement).value),
+                      )
+                    "
+                  />
+                </label>
+              </div>
+              <div style="margin-bottom: 8px">
+                <button type="button" @click="startEditingLand" :disabled="isEditingLand">
+                  添加区域（进入编辑）
+                </button>
+                <button type="button" @click="cancelEditingLand" v-if="isEditingLand">
+                  取消编辑
+                </button>
+              </div>
+
+              <div
+                v-if="!currentCountryLand || !currentCountryLand.areas.length"
+                class="empty-hint"
+              >
+                当前国家暂无已保存区域
+              </div>
+
+              <ol v-else>
+                <li
+                  v-for="(area, idx) in currentCountryLand.areas"
+                  :key="idx"
+                  style="margin-bottom: 8px"
+                >
+                  区域 {{ idx + 1 }} - 顶点 {{ area.vertices.length }}
+                  <div style="margin-top: 6px">
+                    <button type="button" @click="removeArea(idx)">删除</button>
+                  </div>
+                </li>
+              </ol>
+            </div>
+
+            <div style="margin-top: 16px">
+              <h5 style="margin-bottom: 8px">国家-颜色</h5>
+              <div v-if="!countryColorEntries.length" class="empty-hint">暂无颜色数据</div>
+              <ul v-else style="padding-left: 0; list-style: none; margin: 0">
+                <li
+                  v-for="[countryName, color] in countryColorEntries"
+                  :key="countryName"
+                  style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px"
+                >
+                  <span
+                    :style="{
+                      width: '12px',
+                      height: '12px',
+                      borderRadius: '999px',
+                      background: color,
+                      border: '1px solid rgba(255,255,255,0.25)',
+                      display: 'inline-block',
+                      flex: '0 0 auto',
+                    }"
+                  />
+                  <span
+                    style="
+                      min-width: 0;
+                      overflow: hidden;
+                      text-overflow: ellipsis;
+                      white-space: nowrap;
+                    "
+                  >
+                    {{ countryName }}
+                  </span>
+                </li>
+              </ul>
+            </div>
+          </aside>
+        </div>
       </div>
       <div v-else class="empty-hint globe-empty-hint">
         请先上传一张墨卡托投影世界地图，页面会自动转换为球面。
