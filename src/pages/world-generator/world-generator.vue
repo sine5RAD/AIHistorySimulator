@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, watch, computed } from 'vue'
+import { ref, onMounted, onBeforeUnmount, watch, computed, nextTick } from 'vue'
 
 import { createEmptyWorldData, type WorldData } from '@/types/world'
 import type { CountryData, Party } from '../../types/country'
@@ -9,11 +9,31 @@ const countryJsonError = ref('')
 const worldJsonError = ref('')
 const countryJsonInput = ref<HTMLInputElement | null>(null)
 const worldJsonInput = ref<HTMLInputElement | null>(null)
+const globeCanvas = ref<HTMLCanvasElement | null>(null)
+// 旋转与拖拽状态（用于鼠标拖动旋转球体）
+const rotation = ref(0) // 当前经度偏移，弧度
+const tilt = ref(0) // 当前纬度偏移，弧度
+const isDragging = ref(false)
+const dragStartX = ref(0)
+const dragStartY = ref(0)
+const startRotation = ref(0)
+const startTilt = ref(0)
+const activePointerId = ref<number | null>(null)
+
+let removeGlobeListeners: (() => void) | null = null
+let globeTextureCanvas: HTMLCanvasElement | null = null
+let globeTextureWidth = 0
+let globeTextureHeight = 0
+let globeTextureData: Uint8ClampedArray | null = null
+// 纹理级别的陆地掩码（与纹理同尺寸），1 表示陆地，0 表示海洋
+let globeLandMask: Uint8Array | null = null
+let globeRenderRaf: number | null = null
 const SESSION_DRAFT_KEY = 'worldDataDraft'
 const currentCountryIndex = ref(0)
 const currentCountry = computed(
   () => worldData.value.countries[currentCountryIndex.value] ?? createNormalizedCountry(),
 )
+let globeRenderToken = 0
 
 const isRecord = (v: unknown) => !!v && typeof v === 'object' && !Array.isArray(v)
 const getProp = (obj: unknown, key: string): unknown =>
@@ -130,6 +150,362 @@ const handleMapUpload = async (e: Event) => {
     worldData.value.worldMapImage = String(reader.result ?? '')
   }
   reader.readAsDataURL(file)
+}
+
+const loadImageElement = (src: string) =>
+  new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image()
+    image.onload = () => resolve(image)
+    image.onerror = () => reject(new Error('地图图片加载失败'))
+    image.src = src
+  })
+
+const clamp01 = (value: number) => Math.min(1, Math.max(0, value))
+
+const maxMercatorLatitude = (85.05112878 * Math.PI) / 180
+
+const wrapTextureX = (value: number, width: number) => ((value % width) + width) % width
+
+const clampTextureY = (value: number, height: number) => Math.min(height - 1, Math.max(0, value))
+
+const sampleTextureChannel = (
+  texture: Uint8ClampedArray,
+  width: number,
+  height: number,
+  sampleX: number,
+  sampleY: number,
+  channelOffset: number,
+) => {
+  const baseX = Math.floor(sampleX)
+  const baseY = Math.floor(sampleY)
+  const nextX = baseX + 1
+  const nextY = baseY + 1
+  const fracX = sampleX - baseX
+  const fracY = sampleY - baseY
+
+  const x0 = wrapTextureX(baseX, width)
+  const x1 = wrapTextureX(nextX, width)
+  const y0 = clampTextureY(baseY, height)
+  const y1 = clampTextureY(nextY, height)
+
+  const index00 = (y0 * width + x0) * 4 + channelOffset
+  const index10 = (y0 * width + x1) * 4 + channelOffset
+  const index01 = (y1 * width + x0) * 4 + channelOffset
+  const index11 = (y1 * width + x1) * 4 + channelOffset
+
+  const top = (texture[index00] ?? 0) * (1 - fracX) + (texture[index10] ?? 0) * fracX
+  const bottom = (texture[index01] ?? 0) * (1 - fracX) + (texture[index11] ?? 0) * fracX
+
+  return top * (1 - fracY) + bottom * fracY
+}
+
+const LAND_OVERLAY_ALPHA = 0.1
+const LAND_OVERLAY_R = 255
+const LAND_OVERLAY_G = 220
+const LAND_OVERLAY_B = 40
+
+// 判断给定 RGB 是否为陆地（与 Python 脚本近似的规则）
+const sampleIsLand = (r: number, g: number, b: number, a = 255) => {
+  const alphaThreshold = 10
+  if (a <= alphaThreshold) return false
+  const blueRatio = 1.1
+  const blueMargin = 24
+  const maxrg = Math.max(r, g)
+  const blueIsDominant = b >= maxrg * blueRatio && b >= maxrg + blueMargin
+  return !blueIsDominant
+}
+
+// 客户端版本：直接在纹理上生成陆地掩码（与 Python 脚本同样的蓝色主导规则）
+const generateLandMaskClient = () => {
+  if (!globeTextureData || !globeTextureWidth || !globeTextureHeight) return
+
+  const w = globeTextureWidth
+  const h = globeTextureHeight
+  const mask = new Uint8Array(w * h)
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const idx = (y * w + x) * 4
+      const r = globeTextureData[idx] ?? 0
+      const g = globeTextureData[idx + 1] ?? 0
+      const b = globeTextureData[idx + 2] ?? 0
+      const a = globeTextureData[idx + 3] ?? 255
+      mask[y * w + x] = sampleIsLand(r, g, b, a) ? 1 : 0
+    }
+  }
+
+  globeLandMask = mask
+}
+
+const prepareGlobeTexture = async (src: string) => {
+  const renderToken = ++globeRenderToken
+
+  try {
+    const image = await loadImageElement(src)
+
+    if (renderToken !== globeRenderToken) {
+      return false
+    }
+
+    const sourceWidth = image.naturalWidth || image.width
+    const sourceHeight = image.naturalHeight || image.height
+
+    if (!sourceWidth || !sourceHeight) {
+      return false
+    }
+
+    if (!globeTextureCanvas) {
+      globeTextureCanvas = document.createElement('canvas')
+    }
+
+    globeTextureCanvas.width = sourceWidth
+    globeTextureCanvas.height = sourceHeight
+
+    const sourceContext = globeTextureCanvas.getContext('2d', { willReadFrequently: true })
+    if (!sourceContext) {
+      return false
+    }
+
+    sourceContext.drawImage(image, 0, 0, sourceWidth, sourceHeight)
+    globeTextureData = sourceContext.getImageData(0, 0, sourceWidth, sourceHeight).data
+    globeTextureWidth = sourceWidth
+    globeTextureHeight = sourceHeight
+
+    // 纯前端：直接在客户端根据纹理颜色生成陆地掩码
+    globeLandMask = null
+    try {
+      generateLandMaskClient()
+    } catch (err) {
+      console.error('客户端生成陆地掩码失败', err)
+      globeLandMask = null
+    }
+
+    return true
+  } catch (error) {
+    console.error('Failed to prepare globe texture', error)
+    return false
+  }
+}
+
+const renderWorldGlobe = () => {
+  const canvas = globeCanvas.value
+
+  if (!canvas) {
+    return
+  }
+
+  const context = canvas.getContext('2d', { willReadFrequently: true })
+
+  if (!context) {
+    return
+  }
+
+  const width = canvas.width
+  const height = canvas.height
+  context.clearRect(0, 0, width, height)
+
+  if (!globeTextureData || !globeTextureWidth || !globeTextureHeight) {
+    return
+  }
+
+  const pixels = context.createImageData(width, height)
+  const data = pixels.data
+  const centerX = width / 2
+  const centerY = height / 2
+  const radius = Math.min(width, height) * 0.42
+  const yaw = rotation.value
+  const pitch = tilt.value
+  const cosYaw = Math.cos(yaw)
+  const sinYaw = Math.sin(yaw)
+  const cosPitch = Math.cos(pitch)
+  const sinPitch = Math.sin(pitch)
+  const lightX = -0.35
+  const lightY = 0.35
+  const lightZ = 0.87
+
+  for (let y = 0; y < height; y += 1) {
+    const normalizedY = (centerY - y) / radius
+
+    for (let x = 0; x < width; x += 1) {
+      const normalizedX = (x - centerX) / radius
+      const distanceSquared = normalizedX * normalizedX + normalizedY * normalizedY
+
+      if (distanceSquared > 1) {
+        continue
+      }
+
+      const normalizedZ = Math.sqrt(1 - distanceSquared)
+
+      const rotatedY = normalizedY * cosPitch - normalizedZ * sinPitch
+      const pitchZ = normalizedY * sinPitch + normalizedZ * cosPitch
+      const rotatedX = normalizedX * cosYaw + pitchZ * sinYaw
+      const rotatedZ = -normalizedX * sinYaw + pitchZ * cosYaw
+
+      const latitude = Math.asin(Math.max(-1, Math.min(1, rotatedY)))
+      const longitude = Math.atan2(rotatedX, rotatedZ)
+      const clampedLatitude = Math.max(
+        -maxMercatorLatitude,
+        Math.min(maxMercatorLatitude, latitude),
+      )
+      const mercatorY = 0.5 - Math.log(Math.tan(Math.PI / 4 + clampedLatitude / 2)) / (2 * Math.PI)
+      const u = (longitude + Math.PI) / (2 * Math.PI)
+      const v = clamp01(mercatorY)
+      const brightness =
+        0.28 +
+        0.72 * Math.max(0.15, normalizedX * lightX + normalizedY * lightY + normalizedZ * lightZ)
+      const alpha = 255
+      const pixelIndex = (y * width + x) * 4
+      const sampleX = u * globeTextureWidth - 0.5
+      const sampleY = v * globeTextureHeight - 0.5
+
+      const sampleR = sampleTextureChannel(
+        globeTextureData,
+        globeTextureWidth,
+        globeTextureHeight,
+        sampleX,
+        sampleY,
+        0,
+      )
+      const sampleG = sampleTextureChannel(
+        globeTextureData,
+        globeTextureWidth,
+        globeTextureHeight,
+        sampleX,
+        sampleY,
+        1,
+      )
+      const sampleB = sampleTextureChannel(
+        globeTextureData,
+        globeTextureWidth,
+        globeTextureHeight,
+        sampleX,
+        sampleY,
+        2,
+      )
+
+      // 判断是否为陆地：优先使用预计算的掩码，否则实时按颜色判断
+      let isLand = false
+      if (globeLandMask && globeTextureWidth > 0 && globeTextureHeight > 0) {
+        const tx = wrapTextureX(Math.floor(u * globeTextureWidth), globeTextureWidth)
+        const ty = clampTextureY(Math.floor(v * globeTextureHeight), globeTextureHeight)
+        isLand = !!globeLandMask[ty * globeTextureWidth + tx]
+      } else {
+        isLand = sampleIsLand(Math.round(sampleR), Math.round(sampleG), Math.round(sampleB), 255)
+      }
+
+      const baseR = Math.round(sampleR * brightness)
+      const baseG = Math.round(sampleG * brightness)
+      const baseB = Math.round(sampleB * brightness)
+
+      if (isLand) {
+        // 半透明黄色覆盖：在原底色上叠加黄层，而不是直接替换
+        const overlayR = LAND_OVERLAY_R
+        const overlayG = LAND_OVERLAY_G
+        const overlayB = LAND_OVERLAY_B
+        data[pixelIndex] = Math.round(
+          baseR * (1 - LAND_OVERLAY_ALPHA) + overlayR * LAND_OVERLAY_ALPHA,
+        )
+        data[pixelIndex + 1] = Math.round(
+          baseG * (1 - LAND_OVERLAY_ALPHA) + overlayG * LAND_OVERLAY_ALPHA,
+        )
+        data[pixelIndex + 2] = Math.round(
+          baseB * (1 - LAND_OVERLAY_ALPHA) + overlayB * LAND_OVERLAY_ALPHA,
+        )
+        data[pixelIndex + 3] = alpha
+      } else {
+        data[pixelIndex] = baseR
+        data[pixelIndex + 1] = baseG
+        data[pixelIndex + 2] = baseB
+        data[pixelIndex + 3] = alpha
+      }
+    }
+  }
+
+  context.putImageData(pixels, 0, 0)
+}
+
+const scheduleRenderWorldGlobe = () => {
+  if (globeRenderRaf !== null) {
+    return
+  }
+
+  globeRenderRaf = window.requestAnimationFrame(() => {
+    globeRenderRaf = null
+    renderWorldGlobe()
+  })
+}
+
+// 鼠标/触控拖拽交互：更新 rotation 并重渲染
+const onPointerDown = (e: PointerEvent) => {
+  // 仅响应左键或触控
+  if (e.pointerType !== 'touch' && e.button !== 0) return
+
+  if (!globeCanvas.value) return
+
+  isDragging.value = true
+  dragStartX.value = e.clientX
+  dragStartY.value = e.clientY
+  startRotation.value = rotation.value
+  startTilt.value = tilt.value
+  activePointerId.value = e.pointerId
+
+  try {
+    globeCanvas.value.setPointerCapture(e.pointerId)
+  } catch {
+    // ignore
+  }
+}
+
+const onPointerMove = (e: PointerEvent) => {
+  if (!isDragging.value || e.pointerId !== activePointerId.value) return
+  const canvas = globeCanvas.value
+  if (!canvas) return
+
+  const rect = canvas.getBoundingClientRect()
+  const radius = Math.min(rect.width, rect.height) * 0.42
+  const dx = e.clientX - dragStartX.value
+  const dy = e.clientY - dragStartY.value
+  // 将像素位移映射为弧度偏移，方向取反以匹配拖动方向
+  const deltaX = (dx / Math.max(1, radius)) * -1
+  const deltaY = (dy / Math.max(1, radius)) * -1
+  rotation.value = startRotation.value + deltaX
+  tilt.value = Math.max(-1.45, Math.min(1.45, startTilt.value + deltaY))
+
+  scheduleRenderWorldGlobe()
+}
+
+const endPointerDrag = (e: PointerEvent) => {
+  if (e && activePointerId.value !== null && e.pointerId !== activePointerId.value) return
+  if (globeCanvas.value && activePointerId.value !== null) {
+    try {
+      globeCanvas.value.releasePointerCapture(activePointerId.value)
+    } catch {
+      // ignore
+    }
+  }
+
+  isDragging.value = false
+  activePointerId.value = null
+}
+
+const attachGlobeListeners = (canvas: HTMLCanvasElement) => {
+  // 先解除旧的监听
+  if (removeGlobeListeners) {
+    removeGlobeListeners()
+    removeGlobeListeners = null
+  }
+
+  canvas.addEventListener('pointerdown', onPointerDown)
+  canvas.addEventListener('pointermove', onPointerMove)
+  canvas.addEventListener('pointerup', endPointerDrag)
+  canvas.addEventListener('pointercancel', endPointerDrag)
+
+  removeGlobeListeners = () => {
+    canvas.removeEventListener('pointerdown', onPointerDown)
+    canvas.removeEventListener('pointermove', onPointerMove)
+    canvas.removeEventListener('pointerup', endPointerDrag)
+    canvas.removeEventListener('pointercancel', endPointerDrag)
+  }
 }
 
 const normalizeCountries = (data: unknown): CountryData[] => {
@@ -384,7 +760,7 @@ const triggerWorldJsonImport = () => {
 }
 
 onMounted(() => {
-  // Load draft from sessionStorage (persists within tab, cleared on tab close)
+  // 从 sessionStorage 加载草稿（在标签页内持久化，关闭标签页后清除）
   try {
     const draftJson = window.sessionStorage.getItem(SESSION_DRAFT_KEY)
     if (draftJson) {
@@ -409,7 +785,7 @@ onMounted(() => {
     console.error('Failed to load world draft from sessionStorage', err)
   }
 
-  // Also import a single copied JSON (from text-to-json) and then remove the temp key
+  // 还会导入一个来自 text-to-json 的临时 JSON，然后移除该临时键
   const json = window.localStorage.getItem('copiedCountryJson')
   if (json) {
     try {
@@ -425,9 +801,23 @@ onMounted(() => {
       window.localStorage.removeItem('copiedCountryJson')
     }
   }
+
+  // 在 DOM 更新后绑定拖拽事件（如果 canvas 存在）
+  void nextTick().then(() => {
+    if (globeCanvas.value) {
+      attachGlobeListeners(globeCanvas.value)
+    }
+  })
 })
 
-// Persist worldData to sessionStorage so it survives route navigation in the same tab
+onBeforeUnmount(() => {
+  if (removeGlobeListeners) {
+    removeGlobeListeners()
+    removeGlobeListeners = null
+  }
+})
+
+// 将 worldData 保存到 sessionStorage，以便在同一标签页内导航时保留
 watch(
   worldData,
   (next) => {
@@ -440,7 +830,7 @@ watch(
   { deep: true },
 )
 
-// Clamp currentCountryIndex when countries array changes
+// 当国家数组变化时，修正 currentCountryIndex 的范围
 watch(
   () => worldData.value.countries.length,
   (len) => {
@@ -449,8 +839,32 @@ watch(
       return
     }
 
-    // wrap-around to ensure index is within bounds
+    // 环绕计数以确保索引在有效范围内
     currentCountryIndex.value = ((currentCountryIndex.value % len) + len) % len
+  },
+)
+
+watch(
+  () => worldData.value.worldMapImage,
+  async (src) => {
+    globeTextureData = null
+    globeTextureWidth = 0
+    globeTextureHeight = 0
+
+    if (!src) {
+      scheduleRenderWorldGlobe()
+      return
+    }
+
+    const prepared = await prepareGlobeTexture(src)
+    if (!prepared) {
+      return
+    }
+
+    void nextTick().then(() => {
+      scheduleRenderWorldGlobe()
+      if (globeCanvas.value) attachGlobeListeners(globeCanvas.value)
+    })
   },
 )
 
@@ -481,8 +895,11 @@ const nextCountry = () => {
       <label class="label">上传世界地图（PNG/JPEG）</label>
       <input type="file" accept="image/*" @change="handleMapUpload" />
       <div v-if="worldData.worldMapImage" class="map-preview">
-        <h3>地图预览</h3>
-        <img :src="worldData.worldMapImage" alt="world map" />
+        <h3>球面预览</h3>
+        <canvas ref="globeCanvas" class="globe-canvas" width="720" height="720" />
+      </div>
+      <div v-else class="empty-hint globe-empty-hint">
+        请先上传一张墨卡托投影世界地图，页面会自动转换为球面。
       </div>
     </section>
 
@@ -1265,10 +1682,27 @@ const nextCountry = () => {
   opacity: 0.65;
 }
 
-.map-preview img {
+.map-preview {
+  margin-top: 8px;
+}
+
+.globe-canvas {
   max-width: 100%;
-  height: auto;
   display: block;
+  width: 100%;
+  max-width: 720px;
+  height: auto;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 30% 30%, rgba(118, 160, 230, 0.22), transparent 32%),
+    radial-gradient(circle at center, rgba(8, 15, 30, 0.98), rgba(3, 8, 18, 1));
+  box-shadow:
+    0 18px 42px rgba(0, 0, 0, 0.24),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+.globe-empty-hint {
   margin-top: 8px;
 }
 
