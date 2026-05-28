@@ -17,7 +17,7 @@ import argparse
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 # typing 导入已内联使用，避免未使用导入
 
 try:
@@ -51,7 +51,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-depth",
         type=int,
-        default=8,
+        default=3,
         help="最大递归深度，达到后即使区域仍混合也停止细分",
     )
     parser.add_argument(
@@ -153,19 +153,19 @@ def build_land_prefix_sum(
                 pixel = (v, v, v, 255)
             elif isinstance(p, (tuple, list)):
                 try:
-                    r = int(p[0])
+                    r = int(cast(Any, p)[0])
                 except Exception:
                     r = 0
                 try:
-                    g = int(p[1])
+                    g = int(cast(Any, p)[1])
                 except Exception:
                     g = 0
                 try:
-                    b = int(p[2])
+                    b = int(cast(Any, p)[2])
                 except Exception:
                     b = 0
                 try:
-                    a = int(p[3])
+                    a = int(cast(Any, p)[3])
                 except Exception:
                     a = 255
                 pixel = (r, g, b, a)

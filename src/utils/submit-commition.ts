@@ -40,6 +40,98 @@ export async function submitPreparedPrompt(prepared: PreparedPrompt): Promise<st
   const apiKey = settings?.api ?? ''
   const model = prepared.model ?? settings?.model ?? 'gpt-3.5-turbo'
 
+  const extractCompletionText = (data: unknown) => {
+    if (!data || typeof data !== 'object') {
+      return null
+    }
+
+    const response = data as {
+      choices?: Array<{ message?: { content?: unknown }; text?: unknown }>
+      output?: unknown
+      result?: unknown
+    }
+
+    if (Array.isArray(response.choices) && response.choices.length > 0) {
+      const parts: string[] = []
+
+      for (const choice of response.choices) {
+        const content = choice.message?.content ?? choice.text
+
+        if (typeof content === 'string') {
+          parts.push(content)
+        }
+      }
+
+      if (parts.length > 0) {
+        return parts.join('\n')
+      }
+    }
+
+    if (typeof response.output === 'string') return response.output
+    if (typeof response.result === 'string') return response.result
+
+    return JSON.stringify(data)
+  }
+
+  const callOpenAiCompatibleSdk = async (baseURL?: string) => {
+    const mod = await import('openai')
+
+    /* eslint-disable @typescript-eslint/no-explicit-any */
+    const modAny = mod as any
+    const OpenAI = modAny?.default ?? modAny
+    /* eslint-enable @typescript-eslint/no-explicit-any */
+
+    if (!OpenAI) {
+      return null
+    }
+
+    const client = baseURL ? new OpenAI({ baseURL, apiKey }) : new OpenAI({ apiKey })
+
+    const completion = await client.chat.completions.create({
+      model,
+      messages: prepared.messages,
+      stream: false,
+    })
+
+    return extractCompletionText(completion)
+  }
+
+  if (provider === 'OpenAI') {
+    if (!apiKey) {
+      console.error('No API key available for OpenAI')
+      return null
+    }
+
+    try {
+      return await callOpenAiCompatibleSdk()
+    } catch (err) {
+      console.warn('OpenAI SDK call failed, falling back to REST fetch', err)
+    }
+
+    try {
+      const res = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({ model, messages: prepared.messages }),
+      })
+
+      if (!res.ok) {
+        const text = await res.text()
+        console.error('OpenAI API error', res.status, text)
+        return null
+      }
+
+      const data = await res.json()
+      return extractCompletionText(data)
+    } catch (err) {
+      console.error('Failed to call OpenAI', err)
+      return null
+    }
+  }
+
   if (provider === 'DeepSeek') {
     // DeepSeek REST Chat endpoint (assumed). Uses Bearer token in Authorization header.
     if (!apiKey) {
@@ -48,34 +140,10 @@ export async function submitPreparedPrompt(prepared: PreparedPrompt): Promise<st
     }
     // 优先尝试使用 OpenAI 官方 SDK（DeepSeek 兼容 OpenAI 格式）
     try {
-      // 动态导入，兼容后端 Node 环境（如果 SDK 可用）
-      const mod = await import('openai')
+      const sdkResult = await callOpenAiCompatibleSdk('https://api.deepseek.com')
 
-      /* eslint-disable @typescript-eslint/no-explicit-any */
-      const modAny = mod as any
-      const OpenAI = modAny?.default ?? modAny
-      /* eslint-enable @typescript-eslint/no-explicit-any */
-
-      if (OpenAI) {
-        try {
-          const client = new OpenAI({ baseURL: 'https://api.deepseek.com', apiKey })
-
-          // 使用 SDK 的 chat.create
-          const completion = await client.chat.completions.create({
-            model,
-            messages: prepared.messages,
-            thinking: { type: 'enabled' },
-            reasoning_effort: 'high',
-            stream: false,
-          })
-
-          const choice = completion?.choices?.[0]
-          const content = choice?.message?.content ?? choice?.text
-          if (typeof content === 'string') return content
-        } catch (err) {
-          // SDK 调用失败，回退到 fetch
-          console.warn('OpenAI SDK call to DeepSeek failed, falling back to fetch', err)
-        }
+      if (typeof sdkResult === 'string' && sdkResult.length > 0) {
+        return sdkResult
       }
     } catch (err) {
       // 如果无法导入 SDK（例如在浏览器中），则使用 fetch 回退
@@ -102,22 +170,7 @@ export async function submitPreparedPrompt(prepared: PreparedPrompt): Promise<st
       }
 
       const data = await res.json()
-
-      // Flexible parsing: try choices[].message.content, fallback to data.output or data.result
-      if (Array.isArray(data.choices) && data.choices.length > 0) {
-        const parts: string[] = []
-        for (const ch of data.choices) {
-          const content = ch.message?.content ?? ch.text
-          if (typeof content === 'string') parts.push(content)
-        }
-        return parts.join('\n')
-      }
-
-      if (typeof data.output === 'string') return data.output
-      if (typeof data.result === 'string') return data.result
-
-      // Last resort: stringify the response
-      return JSON.stringify(data)
+      return extractCompletionText(data)
     } catch (e) {
       console.error('Failed to call DeepSeek', e)
       return null

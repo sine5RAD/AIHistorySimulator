@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, watch, computed, nextTick } from 'vue'
+import { useRouter } from 'vue-router'
 
 import { createEmptyWorldData, type WorldData } from '@/types/world'
 import type { CountryData, Party } from '../../types/country'
@@ -12,6 +13,7 @@ const worldJsonError = ref('')
 const countryJsonInput = ref<HTMLInputElement | null>(null)
 const worldJsonInput = ref<HTMLInputElement | null>(null)
 const globeCanvas = ref<HTMLCanvasElement | null>(null)
+const worldMapSourceName = ref('')
 // 旋转与拖拽状态（用于鼠标拖动旋转球体）
 const rotation = ref(0) // 当前经度偏移，弧度
 const tilt = ref(0) // 当前纬度偏移，弧度
@@ -31,7 +33,11 @@ let globeTextureData: Uint8ClampedArray | null = null
 let globeLandMask: Uint8Array | null = null
 let globeRenderRaf: number | null = null
 const SESSION_DRAFT_KEY = 'worldDataDraft'
+const EVENT_DRIVE_WORLD_PACKAGE_KEY = 'event-drive-world-package-json'
+const router = useRouter()
 const currentCountryIndex = ref(0)
+const estimatedSendTokenCount = ref<number | null>(null)
+let estimateTokenTimer: number | null = null
 const currentCountry = computed(
   () => worldData.value.countries[currentCountryIndex.value] ?? createNormalizedCountry(),
 )
@@ -474,8 +480,27 @@ const finishEditingPolygon = () => {
     }
   }
 
+  if (!overlap) {
+    for (const [otherCountryName, otherLand] of Object.entries(landMap.value)) {
+      if (!otherCountryName || otherCountryName === countryName) {
+        continue
+      }
+
+      for (const area of otherLand.areas) {
+        if (polygonsOverlap(polygon, area.vertices)) {
+          overlap = true
+          break
+        }
+      }
+
+      if (overlap) {
+        break
+      }
+    }
+  }
+
   if (overlap) {
-    alert('新增国土与现有国土存在重合，操作已取消')
+    alert('新增区域与其他国家领土存在重合，操作已取消')
     editingPins.value = []
     isEditingLand.value = false
     scheduleRenderWorldGlobe()
@@ -730,6 +755,8 @@ const handleMapUpload = async (e: Event) => {
 
   if (!file) return
 
+  worldMapSourceName.value = file.name
+
   const reader = new FileReader()
   reader.onload = () => {
     worldData.value.worldMapImage = String(reader.result ?? '')
@@ -744,6 +771,227 @@ const loadImageElement = (src: string) =>
     image.onerror = () => reject(new Error('地图图片加载失败'))
     image.src = src
   })
+
+type QuadtreeNode = {
+  x: number
+  y: number
+  width: number
+  height: number
+  leaf: boolean
+  land: boolean
+  land_ratio: number
+  children?: QuadtreeNode[]
+}
+
+type QuadtreePayload = {
+  source: string
+  width: number
+  height: number
+  classification: {
+    type: 'non-blue-as-land'
+    blueRatio: number
+    blueMargin: number
+    alphaThreshold: number
+  }
+  maxDepth: number
+  minSize: number
+  tree: QuadtreeNode
+}
+
+const QUADTREE_BLUE_RATIO = 1.1
+const QUADTREE_BLUE_MARGIN = 24
+const QUADTREE_ALPHA_THRESHOLD = 16
+const QUADTREE_MAX_DEPTH = 4
+const QUADTREE_MIN_SIZE = 1
+
+const getImageDataFromSource = async (src: string) => {
+  const image = await loadImageElement(src)
+  const width = image.naturalWidth || image.width
+  const height = image.naturalHeight || image.height
+
+  const canvas = document.createElement('canvas')
+  canvas.width = width
+  canvas.height = height
+
+  const context = canvas.getContext('2d')
+  if (!context) {
+    throw new Error('无法获取图片画布上下文')
+  }
+
+  context.drawImage(image, 0, 0, width, height)
+  const imageData = context.getImageData(0, 0, width, height)
+
+  return { width, height, data: imageData.data }
+}
+
+const isQuadtreeLandPixel = (pixel: Uint8ClampedArray, index: number) => {
+  const red = pixel[index] ?? 0
+  const green = pixel[index + 1] ?? 0
+  const blue = pixel[index + 2] ?? 0
+  const alpha = pixel[index + 3] ?? 255
+
+  if (alpha <= QUADTREE_ALPHA_THRESHOLD) {
+    return false
+  }
+
+  const blueIsDominant =
+    blue >= Math.max(red, green) * QUADTREE_BLUE_RATIO &&
+    blue >= Math.max(red, green) + QUADTREE_BLUE_MARGIN
+
+  return !blueIsDominant
+}
+
+const buildQuadtreePrefixSum = (pixelData: Uint8ClampedArray, width: number, height: number) => {
+  const prefixWidth = width + 1
+  const prefix: number[] = Array.from({ length: (width + 1) * (height + 1) }, () => 0)
+
+  for (let y = 0; y < height; y += 1) {
+    let rowSum = 0
+    const prefixRow = (y + 1) * prefixWidth
+    const prefixPrevRow = y * prefixWidth
+
+    for (let x = 0; x < width; x += 1) {
+      const index = (y * width + x) * 4
+      rowSum += isQuadtreeLandPixel(pixelData, index) ? 1 : 0
+      prefix[prefixRow + x + 1] = (prefix[prefixPrevRow + x + 1] ?? 0) + rowSum
+    }
+  }
+
+  return prefix
+}
+
+const getQuadtreeLandCount = (
+  prefix: number[],
+  imageWidth: number,
+  x: number,
+  y: number,
+  regionWidth: number,
+  regionHeight: number,
+) => {
+  const prefixWidth = imageWidth + 1
+  const x1 = x
+  const y1 = y
+  const x2 = x + regionWidth
+  const y2 = y + regionHeight
+
+  return (
+    (prefix[y2 * prefixWidth + x2] ?? 0) -
+    (prefix[y1 * prefixWidth + x2] ?? 0) -
+    (prefix[y2 * prefixWidth + x1] ?? 0) +
+    (prefix[y1 * prefixWidth + x1] ?? 0)
+  )
+}
+
+const splitQuadtreeRegion = (x: number, y: number, width: number, height: number) => {
+  const halfWidth = Math.floor(width / 2)
+  const halfHeight = Math.floor(height / 2)
+  const leftWidth = halfWidth
+  const rightWidth = width - halfWidth
+  const topHeight = halfHeight
+  const bottomHeight = height - halfHeight
+
+  const regions: Array<[number, number, number, number]> = []
+
+  if (leftWidth > 0 && topHeight > 0) regions.push([x, y, leftWidth, topHeight])
+  if (rightWidth > 0 && topHeight > 0) regions.push([x + leftWidth, y, rightWidth, topHeight])
+  if (leftWidth > 0 && bottomHeight > 0) regions.push([x, y + topHeight, leftWidth, bottomHeight])
+  if (rightWidth > 0 && bottomHeight > 0)
+    regions.push([x + leftWidth, y + topHeight, rightWidth, bottomHeight])
+
+  return regions
+}
+
+const buildQuadtreeNode = (
+  prefix: number[],
+  imageWidth: number,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  depth: number,
+): QuadtreeNode => {
+  const area = width * height
+  const lands = getQuadtreeLandCount(prefix, imageWidth, x, y, width, height)
+  const landRatio = area ? lands / area : 0
+
+  if (lands === 0) {
+    return { x, y, width, height, leaf: true, land: false, land_ratio: 0 }
+  }
+
+  if (lands === area) {
+    return { x, y, width, height, leaf: true, land: true, land_ratio: 1 }
+  }
+
+  const canSplit =
+    depth < QUADTREE_MAX_DEPTH && width > QUADTREE_MIN_SIZE && height > QUADTREE_MIN_SIZE
+
+  if (!canSplit) {
+    return {
+      x,
+      y,
+      width,
+      height,
+      leaf: true,
+      land: landRatio >= 0.5,
+      land_ratio: landRatio,
+    }
+  }
+
+  const children = splitQuadtreeRegion(x, y, width, height).map(
+    ([childX, childY, childWidth, childHeight]) =>
+      buildQuadtreeNode(prefix, imageWidth, childX, childY, childWidth, childHeight, depth + 1),
+  )
+
+  if (!children.length) {
+    return {
+      x,
+      y,
+      width,
+      height,
+      leaf: true,
+      land: landRatio >= 0.5,
+      land_ratio: landRatio,
+    }
+  }
+
+  return {
+    x,
+    y,
+    width,
+    height,
+    leaf: false,
+    land: landRatio >= 0.5,
+    land_ratio: landRatio,
+    children,
+  }
+}
+
+const generateQuadtreePayloadFromWorldMap = async (): Promise<QuadtreePayload> => {
+  const src = worldData.value.worldMapImage.trim()
+
+  if (!src) {
+    throw new Error('没有可转换的世界地图图片')
+  }
+
+  const { width, height, data } = await getImageDataFromSource(src)
+  const prefix = buildQuadtreePrefixSum(data, width, height)
+  const tree = buildQuadtreeNode(prefix, width, 0, 0, width, height, 0)
+
+  return {
+    source: worldMapSourceName.value || 'uploaded-world-map',
+    width,
+    height,
+    classification: {
+      type: 'non-blue-as-land',
+      blueRatio: QUADTREE_BLUE_RATIO,
+      blueMargin: QUADTREE_BLUE_MARGIN,
+      alphaThreshold: QUADTREE_ALPHA_THRESHOLD,
+    },
+    maxDepth: QUADTREE_MAX_DEPTH,
+    minSize: QUADTREE_MIN_SIZE,
+    tree,
+  }
+}
 
 const clamp01 = (value: number) => Math.min(1, Math.max(0, value))
 
@@ -1598,6 +1846,63 @@ const downloadWorldJson = () => {
   window.URL.revokeObjectURL(url)
 }
 
+const buildWorldPackagePayload = async () => {
+  const worldWithoutImage = { ...serializeWorldForJson() } as {
+    worldMapImage?: unknown
+    [key: string]: unknown
+  }
+
+  delete worldWithoutImage.worldMapImage
+
+  const quadtreePayload = await generateQuadtreePayloadFromWorldMap()
+
+  return {
+    source: 'world-generator',
+    generatedAt: new Date().toISOString(),
+    currentCountryName: currentCountry.value.国家名称 || '',
+    world: {
+      ...worldWithoutImage,
+      landMap: listCountryLands(),
+      countryColorMap: { ...countryColorMap.value },
+    },
+    quadtree: quadtreePayload,
+  }
+}
+
+const serializeWorldPackageJson = async () => {
+  const packagePayload = await buildWorldPackagePayload()
+
+  return JSON.stringify(packagePayload, null, 2)
+}
+
+const estimateTokensFromJson = (json: string) => Math.max(1, Math.ceil(json.length / 4))
+
+const refreshEstimatedSendTokenCount = async () => {
+  if (!worldData.value.worldMapImage) {
+    estimatedSendTokenCount.value = null
+    return
+  }
+
+  try {
+    const packageJson = await serializeWorldPackageJson()
+    estimatedSendTokenCount.value = estimateTokensFromJson(packageJson)
+  } catch (error) {
+    estimatedSendTokenCount.value = null
+    console.error('Failed to estimate one-click send tokens', error)
+  }
+}
+
+const sendOneClickToEventDrive = async () => {
+  try {
+    const packageJson = await serializeWorldPackageJson()
+
+    window.sessionStorage.setItem(EVENT_DRIVE_WORLD_PACKAGE_KEY, packageJson)
+    router.push({ name: 'event-drive' })
+  } catch (error) {
+    console.error('Failed to send world package to event-drive', error)
+  }
+}
+
 const triggerCountryJsonImport = () => {
   countryJsonInput.value?.click()
 }
@@ -1608,6 +1913,16 @@ const triggerSingleCountryJsonImport = () => {
 
 const triggerWorldJsonImport = () => {
   worldJsonInput.value?.click()
+}
+
+const refreshWorldMapCard = async () => {
+  await nextTick()
+
+  scheduleRenderWorldGlobe()
+
+  if (globeCanvas.value) {
+    attachGlobeListeners(globeCanvas.value)
+  }
 }
 
 onMounted(() => {
@@ -1638,12 +1953,8 @@ onMounted(() => {
     }
   }
 
-  // 在 DOM 更新后绑定拖拽事件（如果 canvas 存在）
-  void nextTick().then(() => {
-    if (globeCanvas.value) {
-      attachGlobeListeners(globeCanvas.value)
-    }
-  })
+  // 每次进入路由时刷新地图卡片并重新绑定事件
+  void refreshWorldMapCard()
   // 暴露调试用的国土帮助函数到 window（便于在控制台调用）
   try {
     const win = window as unknown as { __landHelpers?: unknown }
@@ -1756,6 +2067,24 @@ const nextCountry = () => {
   if (!len) return
   currentCountryIndex.value = (currentCountryIndex.value + 1) % len
 }
+
+watch(
+  [worldData, landMap, countryColorMap, currentCountryIndex],
+  () => {
+    if (estimateTokenTimer !== null) {
+      window.clearTimeout(estimateTokenTimer)
+    }
+
+    estimateTokenTimer = window.setTimeout(() => {
+      void refreshEstimatedSendTokenCount()
+    }, 200)
+  },
+  { deep: true },
+)
+
+onMounted(() => {
+  void refreshEstimatedSendTokenCount()
+})
 </script>
 
 <template>
@@ -1764,6 +2093,12 @@ const nextCountry = () => {
       <h1>世界生成</h1>
       <div class="title-actions">
         <button type="button" @click="triggerWorldJsonImport">导入世界观 JSON</button>
+        <div class="one-click-send-group">
+          <button type="button" @click="sendOneClickToEventDrive">一键发送</button>
+          <span class="token-estimate">{{
+            estimatedSendTokenCount ? `预计 ${estimatedSendTokenCount} tokens` : '预计 token 计算中'
+          }}</span>
+        </div>
         <button type="button" @click="downloadWorldJson">导出世界观 JSON</button>
       </div>
     </div>

@@ -8,30 +8,22 @@ import {
   timezoneOptions,
 } from '../../composables/timezone'
 import { useAiSettings } from '@/composables/ai-settings'
-import {
-  defaultEventDrivePrompt,
-  defaultImportWorldPrompt,
-  defaultTextToJsonPrompt,
-} from '@/composables/prompt-defaults'
+import { defaultEventDrivePrompt, defaultTextToJsonPrompt } from '@/composables/prompt-defaults'
 
 const { apiValue, modelOptions, providerOptions, saveAiSettings, selectedModel, selectedProvider } =
   useAiSettings()
 
 const textToJsonPromptKey = 'prompt-text-to-json'
-const importWorldPromptKey = 'prompt-import-world'
 const eventDrivePromptKey = 'prompt-event-drive'
 
 const textToJsonPrompt = ref('')
-const importWorldPrompt = ref('')
 const eventDrivePrompt = ref('')
 const textToJsonPromptRef = ref<HTMLTextAreaElement | null>(null)
-const importWorldPromptRef = ref<HTMLTextAreaElement | null>(null)
 const eventDrivePromptRef = ref<HTMLTextAreaElement | null>(null)
 
 function savePrompts() {
   try {
     window.localStorage.setItem(textToJsonPromptKey, textToJsonPrompt.value)
-    window.localStorage.setItem(importWorldPromptKey, importWorldPrompt.value)
     window.localStorage.setItem(eventDrivePromptKey, eventDrivePrompt.value)
   } catch (err) {
     console.error('Failed to save prompts', err)
@@ -41,11 +33,6 @@ function savePrompts() {
 function resetTextToJsonPrompt() {
   textToJsonPrompt.value = defaultTextToJsonPrompt
   void nextTick(() => resizeTextarea(textToJsonPromptRef.value))
-}
-
-function resetImportWorldPrompt() {
-  importWorldPrompt.value = defaultImportWorldPrompt
-  void nextTick(() => resizeTextarea(importWorldPromptRef.value))
 }
 
 function resetEventDrivePrompt() {
@@ -68,17 +55,12 @@ onMounted(() => {
   if (t1) textToJsonPrompt.value = t1
   else textToJsonPrompt.value = defaultTextToJsonPrompt
 
-  const t2 = window.localStorage.getItem(importWorldPromptKey)
-  if (t2) importWorldPrompt.value = t2
-  else importWorldPrompt.value = defaultImportWorldPrompt
-
-  const t3 = window.localStorage.getItem(eventDrivePromptKey)
-  if (t3) eventDrivePrompt.value = t3
+  const t2 = window.localStorage.getItem(eventDrivePromptKey)
+  if (t2) eventDrivePrompt.value = t2
   else eventDrivePrompt.value = defaultEventDrivePrompt
 
   void nextTick(() => {
     resizeTextarea(textToJsonPromptRef.value)
-    resizeTextarea(importWorldPromptRef.value)
     resizeTextarea(eventDrivePromptRef.value)
   })
 })
@@ -89,10 +71,6 @@ watch(selectedTimezone, (value) => {
 
 watch(textToJsonPrompt, () => {
   void nextTick(() => resizeTextarea(textToJsonPromptRef.value))
-})
-
-watch(importWorldPrompt, () => {
-  void nextTick(() => resizeTextarea(importWorldPromptRef.value))
 })
 
 watch(eventDrivePrompt, () => {
@@ -152,27 +130,6 @@ watch(eventDrivePrompt, () => {
           type="button"
           class="setting-button setting-reset-button"
           @click="resetTextToJsonPrompt"
-        >
-          重置
-        </button>
-      </div>
-      <div class="setting-field-row">
-        <div class="setting-field setting-field-grow">
-          <label class="setting-label" for="prompt-import-world">导入世界观提示词</label>
-          <textarea
-            id="prompt-import-world"
-            ref="importWorldPromptRef"
-            v-model="importWorldPrompt"
-            class="setting-input setting-textarea"
-            placeholder="例如：请把以下信息加入世界观，记住设定和重要实体"
-            rows="1"
-            @input="resizeTextarea(importWorldPromptRef)"
-          />
-        </div>
-        <button
-          type="button"
-          class="setting-button setting-reset-button"
-          @click="resetImportWorldPrompt"
         >
           重置
         </button>
