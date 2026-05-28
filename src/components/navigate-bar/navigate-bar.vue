@@ -42,7 +42,7 @@ onBeforeUnmount(() => {
   <div id="nav-menu">
     <div id="nav-menu-left">
       <rouer-link to="/pages/index">
-        <img src="/public/favicon.ico" alt="Logo" class="logo" />
+        <img src="/public/logo.png" alt="Logo" class="logo" />
       </rouer-link>
       <router-link to="/pages/text-to-json">
         <span class="nav-item"> 文章->json </span>
