@@ -56,14 +56,28 @@ interface EventDriveArchiveEntry {
   updatedAt: string
 }
 
+interface EventDriveSnapshotEntry {
+  id: string
+  label: string
+  world: WorldLandTransferPayload | null
+  chatInput: string
+  chatMessages: ChatMessage[]
+  createdAt: string
+}
+
 type EventDriveArchive = Record<string, EventDriveArchiveEntry>
+type EventDriveSnapshotHistory = EventDriveSnapshotEntry[]
 
 const EVENT_DRIVE_ARCHIVE_KEY = 'event-drive-world-chat-archive-json'
+const EVENT_DRIVE_SNAPSHOT_HISTORY_KEY = 'event-drive-snapshot-history-json'
+const EVENT_DRIVE_SELECTED_SNAPSHOT_KEY = 'event-drive-selected-snapshot-id'
 const EVENT_DRIVE_LAST_WORLD_KEY = 'event-drive-last-world-key'
 const CHAT_WINDOW_DRAFT_KEY = 'event-drive-chat-window-draft'
 const WORLD_PACKAGE_TRANSFER_KEY = 'event-drive-world-package-json'
 const WORLD_JSON_TRANSFER_KEY = 'event-drive-world-json'
 const WORLD_LAND_TRANSFER_KEY = 'event-drive-world-land-json'
+const EVENT_DRIVE_FRESH_SESSION_KEY = 'event-drive-fresh-session'
+const LIVE_SESSION_SNAPSHOT_ID = '__live__'
 
 const router = useRouter()
 const { apiValue, selectedModel, selectedProvider } = useAiSettings()
@@ -78,6 +92,9 @@ const isSending = ref(false)
 const errorText = ref('')
 const chatListRef = ref<HTMLElement | null>(null)
 const archiveImportInputRef = ref<HTMLInputElement | null>(null)
+const snapshotHistory = ref<EventDriveSnapshotHistory>([])
+const selectedSnapshotId = ref(LIVE_SESSION_SNAPSHOT_ID)
+const snapshotMenuOpen = ref(false)
 const pendingWorldLandPayload = ref<WorldLandTransferPayload | null>(null)
 const pendingWorldLandSource = ref<'session' | 'local' | null>(null)
 
@@ -186,6 +203,172 @@ const writeEventDriveArchive = (archive: EventDriveArchive) => {
   window.localStorage.setItem(EVENT_DRIVE_ARCHIVE_KEY, JSON.stringify(archive))
 }
 
+const readSnapshotHistory = (): EventDriveSnapshotHistory => {
+  try {
+    const cachedHistory = window.localStorage.getItem(EVENT_DRIVE_SNAPSHOT_HISTORY_KEY)
+
+    if (!cachedHistory) {
+      return []
+    }
+
+    const parsedHistory = JSON.parse(cachedHistory)
+
+    if (!Array.isArray(parsedHistory)) {
+      return []
+    }
+
+    return parsedHistory
+      .filter((entry): entry is Record<string, unknown> => isRecord(entry))
+      .map((entry) => {
+        const chatMessagesValue = entry.chatMessages
+        const worldValue = entry.world
+
+        return {
+          id: typeof entry.id === 'string' ? entry.id : `snapshot-${new Date().toISOString()}`,
+          label: typeof entry.label === 'string' ? entry.label : '未命名快照',
+          world: isRecord(worldValue) ? (worldValue as WorldLandTransferPayload) : null,
+          chatInput: typeof entry.chatInput === 'string' ? entry.chatInput : '',
+          chatMessages: Array.isArray(chatMessagesValue)
+            ? chatMessagesValue.filter(
+                (message): message is ChatMessage =>
+                  isRecord(message) &&
+                  (message.role === 'user' || message.role === 'assistant') &&
+                  typeof message.content === 'string',
+              )
+            : [],
+          createdAt:
+            typeof entry.createdAt === 'string' ? entry.createdAt : new Date().toISOString(),
+        }
+      })
+  } catch (error) {
+    console.error('Failed to read snapshot history', error)
+    return []
+  }
+}
+
+const writeSnapshotHistory = (history: EventDriveSnapshotHistory) => {
+  window.localStorage.setItem(EVENT_DRIVE_SNAPSHOT_HISTORY_KEY, JSON.stringify(history))
+}
+
+const getSnapshotLabel = (world: WorldLandTransferPayload | null, createdAt: string) => {
+  const worldName = world?.currentCountryName?.trim() || '未命名世界'
+  const timestamp = createdAt.replace('T', ' ').slice(0, 19)
+
+  return `${worldName} · ${timestamp}`
+}
+
+const createSnapshotFromCurrentState = (): EventDriveSnapshotEntry => {
+  const createdAt = new Date().toISOString()
+
+  return {
+    id: `snapshot-${createdAt}-${Math.random().toString(36).slice(2, 8)}`,
+    label: getSnapshotLabel(activeWorldPayload.value, createdAt),
+    world: activeWorldPayload.value ? JSON.parse(JSON.stringify(activeWorldPayload.value)) : null,
+    chatInput: chatInput.value,
+    chatMessages: JSON.parse(JSON.stringify(chatMessages.value)) as ChatMessage[],
+    createdAt,
+  }
+}
+
+const saveSnapshotHistory = (snapshot: EventDriveSnapshotEntry) => {
+  const nextHistory = [snapshot, ...readSnapshotHistory()].filter(
+    (entry, index, history) =>
+      history.findIndex((candidate) => candidate.id === entry.id) === index,
+  )
+
+  snapshotHistory.value = nextHistory
+  writeSnapshotHistory(nextHistory)
+  window.localStorage.setItem(EVENT_DRIVE_SELECTED_SNAPSHOT_KEY, snapshot.id)
+  selectedSnapshotId.value = snapshot.id
+}
+
+const closeSnapshotMenu = () => {
+  snapshotMenuOpen.value = false
+}
+
+const toggleSnapshotMenu = () => {
+  snapshotMenuOpen.value = !snapshotMenuOpen.value
+}
+
+const selectSnapshotById = (snapshotId: string) => {
+  if (snapshotId === LIVE_SESSION_SNAPSHOT_ID) {
+    clearSelectedSnapshot()
+    closeSnapshotMenu()
+    return
+  }
+
+  const selectedSnapshot = snapshotHistory.value.find((entry) => entry.id === snapshotId)
+
+  if (!selectedSnapshot) {
+    clearSelectedSnapshot()
+    closeSnapshotMenu()
+    return
+  }
+
+  applySnapshotEntry(selectedSnapshot)
+  closeSnapshotMenu()
+}
+
+const deleteSnapshotById = (snapshotId: string) => {
+  const nextHistory = snapshotHistory.value.filter((entry) => entry.id !== snapshotId)
+
+  snapshotHistory.value = nextHistory
+  writeSnapshotHistory(nextHistory)
+
+  if (selectedSnapshotId.value === snapshotId) {
+    const fallbackSnapshot = nextHistory[0]
+
+    if (fallbackSnapshot) {
+      applySnapshotEntry(fallbackSnapshot)
+    } else {
+      clearSelectedSnapshot()
+    }
+  }
+
+  closeSnapshotMenu()
+}
+
+const clearSelectedSnapshot = () => {
+  window.localStorage.removeItem(EVENT_DRIVE_SELECTED_SNAPSHOT_KEY)
+  selectedSnapshotId.value = LIVE_SESSION_SNAPSHOT_ID
+}
+
+const persistSelectedSnapshot = (snapshotId: string) => {
+  if (snapshotId === LIVE_SESSION_SNAPSHOT_ID) {
+    clearSelectedSnapshot()
+    return
+  }
+
+  window.localStorage.setItem(EVENT_DRIVE_SELECTED_SNAPSHOT_KEY, snapshotId)
+  selectedSnapshotId.value = snapshotId
+}
+
+const clearActiveWorldContext = () => {
+  window.localStorage.removeItem(EVENT_DRIVE_LAST_WORLD_KEY)
+  window.localStorage.removeItem(WORLD_PACKAGE_TRANSFER_KEY)
+  window.sessionStorage.removeItem(WORLD_PACKAGE_TRANSFER_KEY)
+  activeWorldPayload.value = null
+  activeWorldKey.value = ''
+  worldContextMessage.value = null
+}
+
+const applySnapshotEntry = (snapshot: EventDriveSnapshotEntry) => {
+  if (snapshot.world) {
+    setActiveWorldContext(snapshot.world)
+  } else {
+    clearActiveWorldContext()
+  }
+
+  activeWorldKey.value = snapshot.world ? getWorldArchiveKey(snapshot.world) : ''
+  chatMessages.value = snapshot.chatMessages
+  chatInput.value = snapshot.chatInput
+  errorText.value = ''
+  hiddenPromptMessages.value = []
+  pendingWorldLandPayload.value = null
+  pendingWorldLandSource.value = null
+  persistSelectedSnapshot(snapshot.id)
+}
+
 const saveCurrentWorldArchive = () => {
   const worldPayload = activeWorldPayload.value
 
@@ -214,6 +397,22 @@ const saveCurrentWorldArchive = () => {
   activeWorldKey.value = archiveKey
   window.localStorage.setItem(EVENT_DRIVE_LAST_WORLD_KEY, archiveKey)
   writeEventDriveArchive(archive)
+}
+
+const removeCurrentWorldArchive = (archiveKey: string) => {
+  if (!archiveKey) {
+    return
+  }
+
+  const archive = readEventDriveArchive()
+
+  if (!archive[archiveKey]) {
+    return
+  }
+
+  delete archive[archiveKey]
+  writeEventDriveArchive(archive)
+  window.localStorage.removeItem(EVENT_DRIVE_LAST_WORLD_KEY)
 }
 
 const setActiveWorldContext = (payload: WorldLandTransferPayload) => {
@@ -464,6 +663,11 @@ const clearWorldLandPayload = () => {
   pendingWorldLandSource.value = null
 }
 
+const clearChatWindowDraft = () => {
+  window.sessionStorage.removeItem(CHAT_WINDOW_DRAFT_KEY)
+  window.localStorage.removeItem(CHAT_WINDOW_DRAFT_KEY)
+}
+
 const saveChatWindowDraft = () => {
   try {
     const draft = {
@@ -576,9 +780,28 @@ const submitChatContent = async (content: string, options?: { visibleInChat?: bo
 }
 
 const resetChat = async () => {
+  const currentArchiveKey = activeWorldKey.value || getWorldArchiveKey(activeWorldPayload.value)
+
+  if (
+    activeWorldPayload.value ||
+    chatMessages.value.length > 0 ||
+    chatInput.value.trim() ||
+    hiddenPromptMessages.value.length > 0
+  ) {
+    saveCurrentWorldArchive()
+    saveSnapshotHistory(createSnapshotFromCurrentState())
+  }
+
+  removeCurrentWorldArchive(currentArchiveKey)
+
   chatMessages.value = []
   chatInput.value = ''
   errorText.value = ''
+  hiddenPromptMessages.value = []
+  clearWorldLandPayload()
+  clearChatWindowDraft()
+  clearActiveWorldContext()
+  clearSelectedSnapshot()
 
   await scrollToBottom()
 }
@@ -635,24 +858,45 @@ const handleComposerKeydown = (event: KeyboardEvent) => {
 }
 
 onMounted(() => {
-  loadChatWindowDraft()
+  const isFreshSession = window.sessionStorage.getItem(EVENT_DRIVE_FRESH_SESSION_KEY) === 'true'
+
+  if (isFreshSession) {
+    window.sessionStorage.removeItem(EVENT_DRIVE_FRESH_SESSION_KEY)
+    clearSelectedSnapshot()
+  } else {
+    loadChatWindowDraft()
+  }
+
+  snapshotHistory.value = readSnapshotHistory()
 
   const worldLandState = readWorldLandPayload()
-  const archive = readEventDriveArchive()
-  const selectedArchiveKey = resolveArchiveKey(worldLandState?.payload ?? null, archive)
+  const archive = isFreshSession ? {} : readEventDriveArchive()
+  const selectedArchiveKey = isFreshSession
+    ? ''
+    : resolveArchiveKey(worldLandState?.payload ?? null, archive)
 
-  if (selectedArchiveKey && archive[selectedArchiveKey]) {
+  if (!isFreshSession && selectedArchiveKey && archive[selectedArchiveKey]) {
     applyArchiveEntry(selectedArchiveKey, archive[selectedArchiveKey])
   } else if (worldLandState) {
     pendingWorldLandPayload.value = worldLandState.payload
     pendingWorldLandSource.value = worldLandState.source
     setActiveWorldContext(worldLandState.payload)
-  } else if (Object.keys(archive).length === 1) {
+  } else if (!isFreshSession && Object.keys(archive).length === 1) {
     const [singleWorldKey] = Object.keys(archive)
 
     if (singleWorldKey && archive[singleWorldKey]) {
       applyArchiveEntry(singleWorldKey, archive[singleWorldKey])
     }
+  }
+
+  const persistedSnapshotId = isFreshSession
+    ? null
+    : window.localStorage.getItem(EVENT_DRIVE_SELECTED_SNAPSHOT_KEY)
+  const selectedSnapshot =
+    persistedSnapshotId && snapshotHistory.value.find((entry) => entry.id === persistedSnapshotId)
+
+  if (selectedSnapshot) {
+    applySnapshotEntry(selectedSnapshot)
   }
 
   void scrollToBottom()
@@ -695,6 +939,17 @@ watch(hasApiKey, (ready) => {
     void sendPendingWorldLandPayload()
   }
 })
+
+const selectedSnapshotLabel = computed(() => {
+  if (selectedSnapshotId.value === LIVE_SESSION_SNAPSHOT_ID) {
+    return '当前会话'
+  }
+
+  return (
+    snapshotHistory.value.find((entry) => entry.id === selectedSnapshotId.value)?.label ||
+    '当前会话'
+  )
+})
 </script>
 
 <template>
@@ -719,13 +974,58 @@ watch(hasApiKey, (ready) => {
             </div>
 
             <div class="chat-actions">
+              <div class="snapshot-picker" @keydown.esc="closeSnapshotMenu">
+                <button
+                  class="snapshot-trigger"
+                  type="button"
+                  :aria-expanded="snapshotMenuOpen"
+                  aria-haspopup="menu"
+                  @click="toggleSnapshotMenu"
+                >
+                  <span>归档历史</span>
+                  <strong>{{ selectedSnapshotLabel }}</strong>
+                </button>
+
+                <div v-if="snapshotMenuOpen" class="snapshot-menu" role="menu">
+                  <button
+                    class="snapshot-menu-item"
+                    type="button"
+                    role="menuitem"
+                    @click="selectSnapshotById(LIVE_SESSION_SNAPSHOT_ID)"
+                  >
+                    <span class="snapshot-menu-label">当前会话</span>
+                  </button>
+
+                  <div v-if="snapshotHistory.length" class="snapshot-menu-divider"></div>
+
+                  <div v-for="snapshot in snapshotHistory" :key="snapshot.id" class="snapshot-row">
+                    <button
+                      class="snapshot-menu-item"
+                      type="button"
+                      role="menuitem"
+                      @click="selectSnapshotById(snapshot.id)"
+                    >
+                      <span class="snapshot-menu-label">{{ snapshot.label }}</span>
+                    </button>
+
+                    <button
+                      class="snapshot-delete-button"
+                      type="button"
+                      aria-label="删除快照"
+                      @click.stop="deleteSnapshotById(snapshot.id)"
+                    >
+                      删除
+                    </button>
+                  </div>
+                </div>
+              </div>
               <button class="ghost-button" type="button" @click="triggerArchiveImport">
                 导入存档
               </button>
               <button class="ghost-button" type="button" @click="exportEventDriveArchive">
                 导出存档
               </button>
-              <button class="ghost-button" type="button" @click="resetChat">清空对话</button>
+              <button class="ghost-button" type="button" @click="resetChat">重置世界</button>
             </div>
           </div>
 
@@ -941,6 +1241,105 @@ watch(hasApiKey, (ready) => {
   justify-content: flex-end;
 }
 
+.snapshot-picker {
+  position: relative;
+  min-width: 240px;
+}
+
+.snapshot-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-background);
+  color: var(--color-text);
+  cursor: pointer;
+  font: inherit;
+}
+
+.snapshot-trigger span {
+  white-space: nowrap;
+  opacity: 0.82;
+}
+
+.snapshot-trigger strong {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.snapshot-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 30;
+  width: min(420px, 80vw);
+  max-height: 320px;
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-background);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.12);
+}
+
+.snapshot-menu-divider {
+  height: 1px;
+  margin: 8px 0;
+  background: var(--color-border);
+}
+
+.snapshot-row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.snapshot-menu-item {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+}
+
+.snapshot-menu-item:hover,
+.snapshot-delete-button:hover {
+  background: var(--color-background-soft);
+}
+
+.snapshot-menu-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.snapshot-delete-button {
+  flex: 0 0 auto;
+  padding: 0 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: transparent;
+  color: #d92d20;
+  cursor: pointer;
+  font: inherit;
+}
+
 .archive-import-input {
   display: none;
 }
@@ -1146,6 +1545,14 @@ watch(hasApiKey, (ready) => {
   .composer-footer {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .snapshot-picker {
+    min-width: 0;
+  }
+
+  .snapshot-menu {
+    width: 100%;
   }
 
   .primary-button,

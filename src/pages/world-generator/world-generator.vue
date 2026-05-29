@@ -1897,6 +1897,7 @@ const sendOneClickToEventDrive = async () => {
     const packageJson = await serializeWorldPackageJson()
 
     window.sessionStorage.setItem(EVENT_DRIVE_WORLD_PACKAGE_KEY, packageJson)
+    window.sessionStorage.setItem('event-drive-fresh-session', 'true')
     router.push({ name: 'event-drive' })
   } catch (error) {
     console.error('Failed to send world package to event-drive', error)
