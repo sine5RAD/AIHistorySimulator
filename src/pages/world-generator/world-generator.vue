@@ -421,6 +421,19 @@ const canvasPixelToUV = (canvasX: number, canvasY: number) => {
   return { u, v }
 }
 
+// 将纹理坐标 (u,v) 转换为画布屏幕坐标 (sx, sy)，与 renderWorldGlobe 中的投影一致
+const uvToScreen = (u: number, v: number, canvas: HTMLCanvasElement) => {
+  const centerX = canvas.width / 2
+  const centerY = canvas.height / 2
+  const radius = Math.min(canvas.width, canvas.height) * 0.42
+
+  const rotated = uvToRotatedPoint(u, v)
+  const sx = centerX + rotated.x * radius
+  const sy = centerY - rotated.y * radius
+
+  return { sx: Math.round(sx), sy: Math.round(sy) }
+}
+
 // 画布点击处理：放置图钉或结束编辑
 const onCanvasPlacePin = (clientX: number, clientY: number) => {
   const canvas = globeCanvas.value
@@ -435,17 +448,22 @@ const onCanvasPlacePin = (clientX: number, clientY: number) => {
   if (editingPins.value.length > 0) {
     const first = editingPins.value[0]
     if (first) {
-      const dx = sx - first.sx
-      const dy = sy - first.sy
-      const dist2 = dx * dx + dy * dy
-      if (dist2 < 20 * 20) {
-        // 结束编辑
-        finishEditingPolygon()
-        return
+      const canvasEl = globeCanvas.value
+      if (canvasEl) {
+        const firstScreen = uvToScreen(first.u, first.v, canvasEl)
+        const dx = sx - firstScreen.sx
+        const dy = sy - firstScreen.sy
+        const dist2 = dx * dx + dy * dy
+        if (dist2 < 20 * 20) {
+          // 结束编辑
+          finishEditingPolygon()
+          return
+        }
       }
     }
   }
 
+  // 存储 uv 即可，屏幕坐标在渲染时实时计算
   editingPins.value.push({ u: uv.u, v: uv.v, sx, sy })
   scheduleRenderWorldGlobe()
 }
@@ -1316,13 +1334,19 @@ const renderWorldGlobe = () => {
     for (let i = 0; i < editingPins.value.length; i++) {
       const p = editingPins.value[i]
       if (!p) continue
-      if (i === 0) context.moveTo(p.sx, p.sy)
-      else context.lineTo(p.sx, p.sy)
+      const { sx: px, sy: py } = globeCanvas.value
+        ? uvToScreen(p.u, p.v, globeCanvas.value)
+        : { sx: p.sx, sy: p.sy }
+      if (i === 0) context.moveTo(px, py)
+      else context.lineTo(px, py)
     }
     context.stroke()
     for (const p of editingPins.value) {
+      const { sx: px, sy: py } = globeCanvas.value
+        ? uvToScreen(p.u, p.v, globeCanvas.value)
+        : { sx: p.sx, sy: p.sy }
       context.beginPath()
-      context.arc(p.sx, p.sy, 6, 0, Math.PI * 2)
+      context.arc(px, py, 6, 0, Math.PI * 2)
       context.fill()
     }
     context.restore()
