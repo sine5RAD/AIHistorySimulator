@@ -1089,15 +1089,20 @@ const generateLandMaskClient = () => {
 }
 
 const prepareGlobeTexture = async (src: string) => {
+  // 增加一个 render token 用于取消旧的异步加载任务（防止竞态）
   const renderToken = ++globeRenderToken
 
   try {
+    // 1) 加载图片资源（DataURL 或外部 URL）
+    //    loadImageElement 返回在图片加载成功时解析的 HTMLImageElement。
     const image = await loadImageElement(src)
 
+    // 2) 检查 renderToken：如果在等待期间另一次渲染请求已启动，则放弃本次结果
     if (renderToken !== globeRenderToken) {
       return false
     }
 
+    // 3) 获取图片像素尺寸，用于创建与图片等尺寸的离屏画布
     const sourceWidth = image.naturalWidth || image.width
     const sourceHeight = image.naturalHeight || image.height
 
@@ -1105,6 +1110,7 @@ const prepareGlobeTexture = async (src: string) => {
       return false
     }
 
+    // 4) 准备离屏 canvas（复用以减少频繁创建）
     if (!globeTextureCanvas) {
       globeTextureCanvas = document.createElement('canvas')
     }
@@ -1112,17 +1118,20 @@ const prepareGlobeTexture = async (src: string) => {
     globeTextureCanvas.width = sourceWidth
     globeTextureCanvas.height = sourceHeight
 
+    // 5) 获取 2D 上下文（将 willReadFrequently 设置为 true 以优化 readPixel 场景）
     const sourceContext = globeTextureCanvas.getContext('2d', { willReadFrequently: true })
     if (!sourceContext) {
       return false
     }
 
+    // 6) 将图片绘制到离屏画布，并读取像素数据用于后续采样
     sourceContext.drawImage(image, 0, 0, sourceWidth, sourceHeight)
     globeTextureData = sourceContext.getImageData(0, 0, sourceWidth, sourceHeight).data
     globeTextureWidth = sourceWidth
     globeTextureHeight = sourceHeight
 
-    // 纯前端：直接在客户端根据纹理颜色生成陆地掩码
+    // 7) 尝试基于纹理颜色在客户端生成陆地掩码（提高渲染时的判定性能）
+    //    若生成失败则保留 globeLandMask 为 null，渲染时退回到按颜色判断。
     globeLandMask = null
     try {
       generateLandMaskClient()
@@ -1161,54 +1170,73 @@ const renderWorldGlobe = () => {
 
   const pixels = context.createImageData(width, height)
   const data = pixels.data
+  // 画布中心点：用于把屏幕像素坐标转换为以球心为原点的坐标系。
   const centerX = width / 2
   const centerY = height / 2
+  // 球体半径：决定地球在画布上的实际显示大小。
   const radius = Math.min(width, height) * 0.42
+  // 当前视角旋转角：yaw 控制左右转动，pitch 控制上下倾斜。
   const yaw = rotation.value
   const pitch = tilt.value
+  // 预计算三角函数，减少在双层循环里重复计算的开销。
   const cosYaw = Math.cos(yaw)
   const sinYaw = Math.sin(yaw)
   const cosPitch = Math.cos(pitch)
   const sinPitch = Math.sin(pitch)
+  // 光照方向：用于给球体增加明暗层次，让球面更有立体感。
   const lightX = -0.35
   const lightY = 0.35
   const lightZ = 0.87
 
   for (let y = 0; y < height; y += 1) {
+    // 将画布 y 坐标归一化到球面坐标系中，值域约为 [-1, 1]。
     const normalizedY = (centerY - y) / radius
 
     for (let x = 0; x < width; x += 1) {
+      // 将画布 x 坐标归一化到球面坐标系中，值域约为 [-1, 1]。
       const normalizedX = (x - centerX) / radius
+      // 判断当前像素是否落在圆形球体内部；球外区域直接跳过。
       const distanceSquared = normalizedX * normalizedX + normalizedY * normalizedY
 
       if (distanceSquared > 1) {
         continue
       }
 
+      // 在球面方程里补出 z 值，使点位于单位球表面上。
       const normalizedZ = Math.sqrt(1 - distanceSquared)
 
+      // 按当前旋转角把点坐标转到用户视角下，得到球面上的可见位置。
       const rotatedY = normalizedY * cosPitch - normalizedZ * sinPitch
       const pitchZ = normalizedY * sinPitch + normalizedZ * cosPitch
       const rotatedX = normalizedX * cosYaw + pitchZ * sinYaw
       const rotatedZ = -normalizedX * sinYaw + pitchZ * cosYaw
 
+      // 将三维球面坐标转换为经纬度，再映射回纹理采样坐标 u/v。
       const latitude = Math.asin(Math.max(-1, Math.min(1, rotatedY)))
       const longitude = Math.atan2(rotatedX, rotatedZ)
+      // Mercator 投影对纬度做上限裁剪，避免极区无限拉伸。
       const clampedLatitude = Math.max(
         -maxMercatorLatitude,
         Math.min(maxMercatorLatitude, latitude),
       )
+      // v 值沿用墨卡托投影公式，确保球面贴图与世界地图保持一致。
       const mercatorY = 0.5 - Math.log(Math.tan(Math.PI / 4 + clampedLatitude / 2)) / (2 * Math.PI)
+      // u/v 分别表示纹理中的水平和垂直位置，范围都在 [0, 1]。
       const u = (longitude + Math.PI) / (2 * Math.PI)
       const v = clamp01(mercatorY)
+      // brightness 是光照强度系数，用于让朝光面更亮、背光面更暗。
       const brightness =
         0.28 +
         0.72 * Math.max(0.15, normalizedX * lightX + normalizedY * lightY + normalizedZ * lightZ)
+      // alpha 固定为完全不透明，保证球体主体始终可见。
       const alpha = 255
+      // 当前像素在画布中的写入位置。
       const pixelIndex = (y * width + x) * 4
+      // 纹理采样坐标：减去 0.5 可以让采样落在像素中心，而不是像素边缘。
       const sampleX = u * globeTextureWidth - 0.5
       const sampleY = v * globeTextureHeight - 0.5
 
+      // 分别采样纹理的 R/G/B 通道，用于还原原始地图颜色。
       const sampleR = sampleTextureChannel(
         globeTextureData,
         globeTextureWidth,
@@ -1234,25 +1262,29 @@ const renderWorldGlobe = () => {
         2,
       )
 
-      // 判断是否为陆地：优先使用预计算的掩码，否则实时按颜色判断
+      // isLand 表示当前纹理点是否属于陆地；优先使用预计算掩码提高性能。
       let isLand = false
       if (globeLandMask && globeTextureWidth > 0 && globeTextureHeight > 0) {
+        // 将采样位置映射到掩码网格中，和纹理坐标保持一致。
         const tx = wrapTextureX(Math.floor(u * globeTextureWidth), globeTextureWidth)
         const ty = clampTextureY(Math.floor(v * globeTextureHeight), globeTextureHeight)
         isLand = !!globeLandMask[ty * globeTextureWidth + tx]
       } else {
+        // 掩码不可用时，回退到按颜色判断是否为陆地。
         isLand = sampleIsLand(Math.round(sampleR), Math.round(sampleG), Math.round(sampleB), 255)
       }
 
+      // baseR/baseG/baseB 是经过光照修正后的底色。
       const baseR = Math.round(sampleR * brightness)
       const baseG = Math.round(sampleG * brightness)
       const baseB = Math.round(sampleB * brightness)
 
       if (isLand) {
-        // 半透明黄色覆盖：在原底色上叠加黄层，而不是直接替换
+        // 陆地区域再叠加一层半透明黄色，增强地表区域的辨识度。
         const overlayR = LAND_OVERLAY_R
         const overlayG = LAND_OVERLAY_G
         const overlayB = LAND_OVERLAY_B
+        // 通过原底色与叠加色混合，得到最终显示颜色。
         data[pixelIndex] = Math.round(
           baseR * (1 - LAND_OVERLAY_ALPHA) + overlayR * LAND_OVERLAY_ALPHA,
         )
@@ -1264,6 +1296,7 @@ const renderWorldGlobe = () => {
         )
         data[pixelIndex + 3] = alpha
       } else {
+        // 海洋区域只保留原始底色与光照效果。
         data[pixelIndex] = baseR
         data[pixelIndex + 1] = baseG
         data[pixelIndex + 2] = baseB
