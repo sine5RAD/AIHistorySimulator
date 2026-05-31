@@ -710,27 +710,40 @@ const buildCurvedPolygonPoints = (points: RotatedPoint[], segmentsPerEdge = 12) 
   return result
 }
 
-// 将多边形裁剪到前半球（z >= 0），让被地平线遮挡的部分也能沿地平线补齐渲染
+// 将多边形裁剪到前半球（z >= 0），并在被地平线切割的边界处沿地平线补齐点，
+// 以便渲染出被地平线遮挡部分的可视化边界（例如闭合的海平线片段）。
 const clipPolygonToFrontHemisphere = (points: RotatedPoint[]) => {
+  // 至少需要 3 个点才能构成多边形，短路返回空结果
   if (points.length < 3) return [] as RotatedPoint[]
 
+  // 容差值：用于判断点是否在前半球（允许极小的数值误差导致 z 略小于 0）
   const epsilon = 1e-6
+  // 在两次地平线交点之间插入的弧段细分数，用于在地平线间补齐曲线（越大越平滑）
   const horizonSegments = 16
 
+  // 判定函数：点是否位于前半球（z >= 0）
   const isInside = (point: RotatedPoint) => point.z >= -epsilon
 
+  /**
+   * 在结果数组中添加从 `from` 到 `to` 的地平线弧段点（z = 0）。
+   * - 通过 atan2 获得两个点在平面上的角度，沿最短角度差插值生成若干弧段顶点。
+   * - 若角度差接近 0（几乎重合），则不插入任何点以避免重复。
+   */
   const addHorizonArc = (result: RotatedPoint[], from: RotatedPoint, to: RotatedPoint) => {
-    const fromAngle = Math.atan2(from.y, from.x)
-    const toAngle = Math.atan2(to.y, to.x)
+    const fromAngle = Math.atan2(from.y, from.x) // 起点角度
+    const toAngle = Math.atan2(to.y, to.x) // 终点角度
     let delta = toAngle - fromAngle
 
+    // 将角度差规约到 (-PI, PI]，以便沿最短方向插值
     while (delta <= -Math.PI) delta += Math.PI * 2
     while (delta > Math.PI) delta -= Math.PI * 2
 
+    // 若差值约为 0，则两点方向一致，不需要插入弧段
     if (Math.abs(delta) < 1e-6) {
       return
     }
 
+    // 将弧沿 angle 从 fromAngle 到 toAngle 分割为若干段，并在 z=0 平面上添加单位向量点
     for (let step = 1; step <= horizonSegments; step += 1) {
       const t = step / horizonSegments
       const angle = fromAngle + delta * t
@@ -739,8 +752,10 @@ const clipPolygonToFrontHemisphere = (points: RotatedPoint[]) => {
   }
 
   const result: RotatedPoint[] = []
+  // 找到第一个位于前半球的顶点作为起点（从该点开始顺时针/逆时针遍历多边形）
   const startIndex = points.findIndex((point) => isInside(point))
   if (startIndex < 0) {
+    // 若所有点均在背面，则没有需要绘制的前半球片段
     return result
   }
 
@@ -749,18 +764,23 @@ const clipPolygonToFrontHemisphere = (points: RotatedPoint[]) => {
     return result
   }
 
+  // 归一化并添加起点（将可能略微偏离单位球的点投影回单位球表面）
   result.push(normalizeRotatedPoint(startPoint))
+  // pendingExit 用来记录上一个从前半球到背半球的交点，当再次进入前半球时用它补齐地平线弧
   let pendingExit: RotatedPoint | null = null
 
+  // 从 startIndex 开始遍历多边形的每条边，使用环绕索引处理闭合边
   for (let offset = 1; offset <= points.length; offset += 1) {
     const currentIndex = (startIndex + offset - 1) % points.length
     const nextIndex = (startIndex + offset) % points.length
     const current = points[currentIndex]
     const next = points[nextIndex]
     if (!current || !next) continue
+
     const currentInside = isInside(current)
     const nextInside = isInside(next)
 
+    // 情形 A：当前点与下一个点都在前半球 —— 直接将下一个点（归一化）加入结果（除非它是起点）
     if (currentInside && nextInside) {
       if (nextIndex !== startIndex) {
         result.push(normalizeRotatedPoint(next))
@@ -768,25 +788,32 @@ const clipPolygonToFrontHemisphere = (points: RotatedPoint[]) => {
       continue
     }
 
+    // 情形 B：当前在前半球，下一个在背半球 —— 边穿过地平线，计算交点并添加到结果，记录为 pendingExit
     if (currentInside && !nextInside) {
+      // 线性插值参数 t，按 z 分量解得当前到 next 在 z=0 处的插值比例
       const t = current.z / (current.z - next.z)
+      // 在球面上插值后将点投影到地平线（z=0 单位向量）以获得准确的边界点
       const horizonPoint = projectRotatedPointToHorizon(lerpRotatedPoint(current, next, t))
       result.push(horizonPoint)
       pendingExit = horizonPoint
       continue
     }
 
+    // 情形 C：当前在背半球，下一个进入前半球 —— 边从背面进入前半球，需要：
+    //  (1) 计算进入点并添加，(2) 如果之前存在 pendingExit（之前的退出点），在二者间插入沿地平线的弧段，
+    //  (3) 添加下一个顶点的归一化投影（除非它是起点）。
     if (!currentInside && nextInside) {
       const t = current.z / (current.z - next.z)
       const horizonPoint = projectRotatedPointToHorizon(lerpRotatedPoint(current, next, t))
       if (pendingExit) {
+        // 在上一次退出点与本次进入点之间补齐沿地平线的弧段
         addHorizonArc(result, pendingExit, horizonPoint)
       }
       result.push(horizonPoint)
       if (nextIndex !== startIndex) {
         result.push(normalizeRotatedPoint(next))
       }
-      pendingExit = null
+      pendingExit = null // 已处理完 pendingExit
     }
   }
 
