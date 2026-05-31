@@ -382,8 +382,8 @@ const createNormalizedCountryFromUnknown = (value: unknown) => {
 const isEditingLand = ref(false)
 const editingPins = ref<{ u: number; v: number; sx: number; sy: number }[]>([])
 
-// 在画布屏幕坐标 -> 纹理坐标 (u,v) 的映射（与 renderWorldGlobe 使用的计算保持一致）
-const canvasPixelToUV = (canvasX: number, canvasY: number) => {
+// 将画布像素映射到球面相关数据（供渲染与交互共用）
+const canvasPixelToSphereData = (canvasX: number, canvasY: number) => {
   const canvas = globeCanvas.value
   if (!canvas) return null
 
@@ -418,7 +418,14 @@ const canvasPixelToUV = (canvasX: number, canvasY: number) => {
   const u = (longitude + Math.PI) / (2 * Math.PI)
   const v = clamp01(mercatorY)
 
-  return { u, v }
+  return { normalizedX, normalizedY, normalizedZ, rotatedX, rotatedY, rotatedZ, u, v }
+}
+
+// 在画布屏幕坐标 -> 纹理坐标 (u,v) 的映射（兼容旧接口，复用上面的计算）
+const canvasPixelToUV = (canvasX: number, canvasY: number) => {
+  const d = canvasPixelToSphereData(canvasX, canvasY)
+  if (!d) return null
+  return { u: d.u, v: d.v }
 }
 
 // 将纹理坐标 (u,v) 转换为画布屏幕坐标 (sx, sy)，与 renderWorldGlobe 中的投影一致
@@ -434,7 +441,26 @@ const uvToScreen = (u: number, v: number, canvas: HTMLCanvasElement) => {
   return { sx: Math.round(sx), sy: Math.round(sy) }
 }
 
-// 画布点击处理：放置图钉或结束编辑
+/**
+ * 在画布上放置图钉或在靠近首个图钉时结束当前多边形编辑。
+ *
+ * 行为摘要：
+ * - 将窗口坐标 (`clientX`, `clientY`) 转换为画布内部像素坐标 (sx, sy)。
+ * - 将画布像素坐标转换为纹理坐标 `(u,v)`（用于地理位置计算与保存）。
+ * - 如果当前处于多边形编辑模式并且点击位置距离第一个图钉很近，则视为用户完成多边形，调用 `finishEditingPolygon()`。
+ * - 否则，将一个新的图钉（存储为 `{ u, v, sx, sy }`）追加到 `editingPins`，并调度重绘地球投影。
+ *
+ * 参数：
+ * @param clientX - 事件的 clientX（相对于视口左上角的 x 坐标）
+ * @param clientY - 事件的 clientY（相对于视口左上角的 y 坐标）
+ *
+ * 设计细节与注意事项：
+ * - 保存的是纹理坐标 `(u,v)`，而非屏幕坐标；屏幕坐标仅用于即时交互和视觉判断，
+ *   在渲染过程中会根据当前画布大小动态计算，以保证响应式缩放时位置正确。
+ * - 判断是否关闭多边形时使用的是屏幕像素距离平方（`dist2 < 20*20`），
+ *   阈值约 20px，减少放置误判且与设备像素比无关（若需要可根据 DPR 调整）。
+ * - 若 `canvas` 或 `uv` 无效，则函数会安全地返回，不抛出异常。
+ */
 const onCanvasPlacePin = (clientX: number, clientY: number) => {
   const canvas = globeCanvas.value
   if (!canvas) return
@@ -1170,60 +1196,18 @@ const renderWorldGlobe = () => {
 
   const pixels = context.createImageData(width, height)
   const data = pixels.data
-  // 画布中心点：用于把屏幕像素坐标转换为以球心为原点的坐标系。
-  const centerX = width / 2
-  const centerY = height / 2
-  // 球体半径：决定地球在画布上的实际显示大小。
-  const radius = Math.min(width, height) * 0.42
-  // 当前视角旋转角：yaw 控制左右转动，pitch 控制上下倾斜。
-  const yaw = rotation.value
-  const pitch = tilt.value
-  // 预计算三角函数，减少在双层循环里重复计算的开销。
-  const cosYaw = Math.cos(yaw)
-  const sinYaw = Math.sin(yaw)
-  const cosPitch = Math.cos(pitch)
-  const sinPitch = Math.sin(pitch)
   // 光照方向：用于给球体增加明暗层次，让球面更有立体感。
   const lightX = -0.35
   const lightY = 0.35
   const lightZ = 0.87
 
   for (let y = 0; y < height; y += 1) {
-    // 将画布 y 坐标归一化到球面坐标系中，值域约为 [-1, 1]。
-    const normalizedY = (centerY - y) / radius
-
     for (let x = 0; x < width; x += 1) {
-      // 将画布 x 坐标归一化到球面坐标系中，值域约为 [-1, 1]。
-      const normalizedX = (x - centerX) / radius
-      // 判断当前像素是否落在圆形球体内部；球外区域直接跳过。
-      const distanceSquared = normalizedX * normalizedX + normalizedY * normalizedY
+      const sphere = canvasPixelToSphereData(x, y)
+      if (!sphere) continue
 
-      if (distanceSquared > 1) {
-        continue
-      }
+      const { normalizedX, normalizedY, normalizedZ, u, v } = sphere
 
-      // 在球面方程里补出 z 值，使点位于单位球表面上。
-      const normalizedZ = Math.sqrt(1 - distanceSquared)
-
-      // 按当前旋转角把点坐标转到用户视角下，得到球面上的可见位置。
-      const rotatedY = normalizedY * cosPitch - normalizedZ * sinPitch
-      const pitchZ = normalizedY * sinPitch + normalizedZ * cosPitch
-      const rotatedX = normalizedX * cosYaw + pitchZ * sinYaw
-      const rotatedZ = -normalizedX * sinYaw + pitchZ * cosYaw
-
-      // 将三维球面坐标转换为经纬度，再映射回纹理采样坐标 u/v。
-      const latitude = Math.asin(Math.max(-1, Math.min(1, rotatedY)))
-      const longitude = Math.atan2(rotatedX, rotatedZ)
-      // Mercator 投影对纬度做上限裁剪，避免极区无限拉伸。
-      const clampedLatitude = Math.max(
-        -maxMercatorLatitude,
-        Math.min(maxMercatorLatitude, latitude),
-      )
-      // v 值沿用墨卡托投影公式，确保球面贴图与世界地图保持一致。
-      const mercatorY = 0.5 - Math.log(Math.tan(Math.PI / 4 + clampedLatitude / 2)) / (2 * Math.PI)
-      // u/v 分别表示纹理中的水平和垂直位置，范围都在 [0, 1]。
-      const u = (longitude + Math.PI) / (2 * Math.PI)
-      const v = clamp01(mercatorY)
       // brightness 是光照强度系数，用于让朝光面更亮、背光面更暗。
       const brightness =
         0.28 +
@@ -1307,42 +1291,50 @@ const renderWorldGlobe = () => {
 
   context.putImageData(pixels, 0, 0)
 
-  // 绘制所有国家的已存在区域：非选中国家为淡色，选中国家为强调色
+  // 选中国家名称（如果存在），用于在渲染时高亮对应区域。
   const selCountryName = currentCountry.value?.国家名称?.trim() || ''
+  // 若没有任何国家数据则跳过绘制区域的流程，避免不必要的 canvas 操作。
   if (landMap.value && Object.keys(landMap.value).length) {
-    context.save()
-    context.lineWidth = 1.5
+    context.save() // 保存画布状态，绘制后使用 restore 恢复
+    context.lineWidth = 1.5 // 默认描边宽度（会针对选中状态作调整）
+    // 遍历每个国家及其地块
     for (const [countryName, land] of Object.entries(landMap.value)) {
-      if (!land || !land.areas) continue
-      const isSelected = countryName === selCountryName
-      const countryColor = getCountryColor(countryName)
+      if (!land || !land.areas) continue // 跳过无效数据
+      const isSelected = countryName === selCountryName // 标记是否为被选中国家
+      const countryColor = getCountryColor(countryName) // 获取该国的主题颜色
       for (const area of land.areas) {
-        if (!area || !area.vertices || !area.vertices.length) continue
+        if (!area || !area.vertices || !area.vertices.length) continue // 忽略空区域
+        // 将每个顶点从纹理坐标 (u,v) 转换为经过视角旋转的平面坐标
         const rotatedPoints = area.vertices
           .filter((vert): vert is [number, number] => !!vert)
           .map(([u, v]) => uvToRotatedPoint(u, v))
+        // 对多边形边界做插值平滑，减少锯齿状直线感
         const curvedPoints = buildCurvedPolygonPoints(rotatedPoints, 16)
+        // 裁剪到当前可见半球，只绘制朝向用户的片段
         const clippedPoints = clipPolygonToFrontHemisphere(curvedPoints)
-        if (clippedPoints.length < 3) continue
+        if (clippedPoints.length < 3) continue // 不足 3 个点无法构成多边形
 
+        // 计算画布中心与投影半径，用于将旋转坐标映射回屏幕坐标
         const centerX = canvas.width / 2
         const centerY = canvas.height / 2
         const radius = Math.min(canvas.width, canvas.height) * 0.42
 
         context.beginPath()
+        // 将裁剪后的每个点转换为屏幕坐标并绘制路径
         for (let i = 0; i < clippedPoints.length; i += 1) {
           const point = clippedPoints[i]
           if (!point) continue
-          const sx = centerX + point.x * radius
-          const sy = centerY - point.y * radius
+          const sx = centerX + point.x * radius // x 投影：中心偏移 + 单位坐标 * 半径
+          const sy = centerY - point.y * radius // y 投影：注意画布 y 方向与数学坐标相反
           if (i === 0) {
-            context.moveTo(sx, sy)
+            context.moveTo(sx, sy) // 起点
           } else {
-            context.lineTo(sx, sy)
+            context.lineTo(sx, sy) // 连续线段
           }
         }
-        context.closePath()
+        context.closePath() // 封闭路径，准备填充与描边
 
+        // 根据是否为选中状态选择不同的填充与描边透明度与粗细
         context.fillStyle = isSelected
           ? withColorAlpha(countryColor, 0.22)
           : withColorAlpha(countryColor, 0.2)
@@ -1350,39 +1342,44 @@ const renderWorldGlobe = () => {
           ? withColorAlpha(countryColor, 0.95)
           : withColorAlpha(countryColor, 0.65)
         context.lineWidth = isSelected ? 2 : 1
-        context.fill()
-        context.stroke()
+        context.fill() // 绘制填充
+        context.stroke() // 绘制边框
       }
     }
-    context.restore()
+    context.restore() // 恢复画布状态，避免影响后续绘制样式
   }
 
-  // 绘制当前正在编辑的图钉与连线
+  // 绘制当前正在编辑的图钉与连线（编辑态预览）
   if (isEditingLand.value && editingPins.value.length) {
-    context.save()
+    context.save() // 保存样式状态（随后 restore）
+    // 使用强调色与较粗线条让编辑内容显眼
     context.strokeStyle = 'rgba(40,120,240,0.95)'
     context.fillStyle = 'rgba(40,120,240,0.95)'
     context.lineWidth = 2
+    // 绘制连线：依次连接每个图钉的当前屏幕位置
     context.beginPath()
     for (let i = 0; i < editingPins.value.length; i++) {
       const p = editingPins.value[i]
       if (!p) continue
+      // 优先根据当前画布与投影计算屏幕坐标，若 canvas 不可用则回退到保存的快照坐标
       const { sx: px, sy: py } = globeCanvas.value
         ? uvToScreen(p.u, p.v, globeCanvas.value)
         : { sx: p.sx, sy: p.sy }
-      if (i === 0) context.moveTo(px, py)
-      else context.lineTo(px, py)
+      if (i === 0)
+        context.moveTo(px, py) // 起点
+      else context.lineTo(px, py) // 连接线段
     }
-    context.stroke()
+    context.stroke() // 绘制多边形预览的轮廓线
+    // 绘制每个图钉的控制点圆点，便于手动拖拽/删除
     for (const p of editingPins.value) {
       const { sx: px, sy: py } = globeCanvas.value
         ? uvToScreen(p.u, p.v, globeCanvas.value)
         : { sx: p.sx, sy: p.sy }
       context.beginPath()
-      context.arc(px, py, 6, 0, Math.PI * 2)
-      context.fill()
+      context.arc(px, py, 6, 0, Math.PI * 2) // 固定半径的圆点标记
+      context.fill() // 使用与连线相同的填充色
     }
-    context.restore()
+    context.restore() // 恢复到此前保存的画布样式
   }
 }
 
