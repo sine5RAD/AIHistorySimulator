@@ -1,2 +1,1 @@
-start "http://localhost:4321"
-pnpm dev
+start http://localhost:5173 && pnpm dev
