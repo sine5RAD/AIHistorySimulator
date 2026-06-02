@@ -985,6 +985,13 @@ const submitChatContent = async (content: string, options?: { visibleInChat?: bo
       content: response.trim(),
     })
 
+    // 尝试解析并应用 AI 在回复中包含的指标变更 JSON（如果存在）
+    try {
+      await handleAssistantResponse(response.trim())
+    } catch (error) {
+      console.error('处理 AI 回复中的指标变更时发生错误', error)
+    }
+
     return true
   } catch (error) {
     errorText.value = '发送失败，请稍后重试。'
@@ -1044,6 +1051,162 @@ const buildPreparedPrompt = () => ({
     })),
   ],
 })
+
+const extractJsonFromText = (text: string): string | null => {
+  // 首先尝试寻找 ```json ... ``` 区块
+  const codeBlockMatch = text.match(/```json\s*([\s\S]*?)\s*```/i)
+
+  if (codeBlockMatch && codeBlockMatch[1]) {
+    return codeBlockMatch[1].trim()
+  }
+
+  // 其次尝试直接匹配包含 国家指标 的 JSON 对象
+  const roughMatch = text.match(/\{[\s\S]*?"国家指标"[\s\S]*?\}/)
+
+  if (roughMatch && roughMatch[0]) {
+    return roughMatch[0]
+  }
+
+  return null
+}
+
+const handleAssistantResponse = async (responseText: string) => {
+  const jsonText = extractJsonFromText(responseText)
+
+  if (!jsonText) {
+    return
+  }
+
+  let parsed: unknown
+
+  try {
+    parsed = JSON.parse(jsonText)
+  } catch (error) {
+    console.error('无法解析 AI 返回的 JSON:', error)
+    chatMessages.value.push({
+      role: 'assistant',
+      content: '警告：解析 AI 返回的 JSON 失败，未应用任何变更。',
+    })
+    return
+  }
+
+  const entries: unknown[] = Array.isArray(parsed) ? parsed : [parsed]
+
+  const applied: string[] = []
+  const failed: string[] = []
+
+  for (const entry of entries) {
+    if (!isRecord(entry)) {
+      failed.push('无效条目：不是对象')
+      continue
+    }
+
+    const countryName = typeof entry.国家名称 === 'string' ? entry.国家名称.trim() : ''
+    const desc = typeof entry.描述 === 'string' ? entry.描述.trim() : ''
+    const indicators = (entry as Record<string, unknown>).国家指标
+
+    if (!countryName) {
+      failed.push('无效条目：缺少 国家名称')
+      continue
+    }
+
+    if (!isCountryIndicatorData(indicators)) {
+      failed.push(`国家 ${countryName} 的 国家指标 字段无效或缺失`)
+      continue
+    }
+
+    // 本地校验：数值有限且为 number
+    const checkProblems: string[] = []
+
+    for (const key of ['政治稳定', '经济发展', '国际影响'] as const) {
+      const v = (indicators as unknown as Record<string, number>)[key]
+
+      if (!Number.isFinite(v)) {
+        checkProblems.push(`${key} 不是有限数字`)
+      }
+    }
+
+    if (checkProblems.length) {
+      failed.push(`${countryName} 校验失败：${checkProblems.join('; ')}`)
+      continue
+    }
+
+    // 获取旧值以便对比
+    const old = activeCountryIndicators.value[countryName]
+
+    // 应用变更到内存
+    activeCountryIndicators.value = {
+      ...activeCountryIndicators.value,
+      [countryName]: {
+        政治稳定: indicators.政治稳定,
+        经济发展: indicators.经济发展,
+        国际影响: indicators.国际影响,
+      },
+    }
+
+    // 同步到 activeWorldPayload 中对应国家的 国家指标 字段（如果存在该国家）
+    try {
+      const countries = getCountriesFromPayload(activeWorldPayload.value)
+
+      for (const country of countries) {
+        if (!isRecord(country)) continue
+
+        const name = typeof country.国家名称 === 'string' ? country.国家名称.trim() : ''
+        if (name === countryName) {
+          country.国家指标 = {
+            政治稳定: indicators.政治稳定,
+            经济发展: indicators.经济发展,
+            国际影响: indicators.国际影响,
+          }
+          break
+        }
+      }
+    } catch (error) {
+      console.error('同步到 activeWorldPayload 失败', error)
+    }
+
+    applied.push(countryName)
+
+    // 记录变更明细推送到聊天以便用户可见
+    const oldSummary = old
+      ? `旧值: 政治稳定=${formatIndicatorValue(old.政治稳定)}, 经济发展=${formatIndicatorValue(old.经济发展)}, 国际影响=${formatIndicatorValue(old.国际影响)}`
+      : '旧值: 无'
+
+    const newSummary = `新值: 政治稳定=${formatIndicatorValue(indicators.政治稳定)}, 经济发展=${formatIndicatorValue(
+      indicators.经济发展,
+    )}, 国际影响=${formatIndicatorValue(indicators.国际影响)}`
+
+    chatMessages.value.push({
+      role: 'assistant',
+      content: `已应用指标变更：${countryName}；${desc || '无描述'}；${oldSummary}；${newSummary}`,
+    })
+  }
+
+  // 持久化
+  try {
+    saveCurrentWorldArchive()
+  } catch (error) {
+    console.error('保存变更到存档失败', error)
+  }
+
+  if (applied.length && !failed.length) {
+    // 全部成功
+    chatMessages.value.push({
+      role: 'assistant',
+      content: `已成功应用 ${applied.length} 条指标变更。`,
+    })
+  } else if (applied.length && failed.length) {
+    chatMessages.value.push({
+      role: 'assistant',
+      content: `部分变更已应用：成功 ${applied.join(', ')}；失败 ${failed.join('; ')}`,
+    })
+  } else if (failed.length) {
+    chatMessages.value.push({
+      role: 'assistant',
+      content: `未应用任何变更，原因：${failed.join('; ')}`,
+    })
+  }
+}
 
 const sendMessage = async () => {
   await submitChatContent(chatInput.value)
