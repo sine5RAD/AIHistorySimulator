@@ -1052,6 +1052,37 @@ const buildPreparedPrompt = () => ({
   ],
 })
 
+const buildPromptReinjectionMessage = () =>
+  [
+    '请立即重置当前会话中的提示词规则。',
+    '以下内容是你接下来必须遵循的最新提示词，请将之前收到的同类约束视为已被替换。',
+    '',
+    '```text',
+    systemPrompt,
+    '```',
+    '',
+    '收到后请仅确认你已完成提示词替换，不要展开解释。',
+  ].join('\n')
+
+const reinjectPrompt = async () => {
+  if (isSending.value) {
+    return
+  }
+
+  hiddenPromptMessages.value = [
+    {
+      role: 'user',
+      content: buildPromptReinjectionMessage(),
+    },
+  ]
+
+  const sent = await submitChatContent('', { visibleInChat: false })
+
+  if (sent) {
+    errorText.value = ''
+  }
+}
+
 const extractJsonFromText = (text: string): string | null => {
   // 首先尝试寻找 ```json ... ``` 区块
   const codeBlockMatch = text.match(/```json\s*([\s\S]*?)\s*```/i)
@@ -1411,6 +1442,7 @@ const selectedSnapshotLabel = computed(() => {
                 导出存档
               </button>
               <button class="ghost-button" type="button" @click="resetChat">重置世界</button>
+              <button class="ghost-button" type="button" @click="reinjectPrompt">重新注入提示词</button>
             </div>
           </div>
 
