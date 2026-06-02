@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 
 export interface FloatingCountrySidebarStat {
   label: string
@@ -13,6 +13,12 @@ export interface FloatingCountrySidebarItem {
   subtitle?: string
   summary?: string
   stats?: FloatingCountrySidebarStat[]
+}
+
+export interface FloatingCountrySidebarEditStatPayload {
+  item: FloatingCountrySidebarItem
+  label: string
+  newValue: string
 }
 
 const props = withDefaults(
@@ -29,10 +35,14 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   select: [item: FloatingCountrySidebarItem]
+  'edit-stat': [payload: FloatingCountrySidebarEditStatPayload]
 }>()
 
 const activeId = ref<string | null>(null)
 const isCollapsed = ref(false)
+const editingKey = ref<string | null>(null)
+const editValue = ref('')
+const editInputRef = ref<HTMLInputElement | null>(null)
 
 const visibleItems = computed(() => props.items.filter((item) => item.id.trim().length > 0))
 
@@ -64,6 +74,49 @@ const buildItemStyle = (item: FloatingCountrySidebarItem) =>
   ({
     '--country-color': item.color || 'var(--color-border)',
   }) as Record<string, string>
+
+const editKey = (item: FloatingCountrySidebarItem, stat: FloatingCountrySidebarStat) =>
+  `${item.id}::${stat.label}`
+
+const isEditing = (item: FloatingCountrySidebarItem, stat: FloatingCountrySidebarStat) =>
+  editingKey.value === editKey(item, stat)
+
+const startEditing = async (item: FloatingCountrySidebarItem, stat: FloatingCountrySidebarStat) => {
+  editingKey.value = editKey(item, stat)
+  editValue.value = stat.value
+  await nextTick()
+  editInputRef.value?.focus()
+  editInputRef.value?.select()
+}
+
+const commitEdit = (item: FloatingCountrySidebarItem, stat: FloatingCountrySidebarStat) => {
+  const newValue = editValue.value.trim()
+  editingKey.value = null
+  editValue.value = ''
+
+  if (newValue && newValue !== stat.value) {
+    emit('edit-stat', { item, label: stat.label, newValue })
+  }
+}
+
+const cancelEdit = () => {
+  editingKey.value = null
+  editValue.value = ''
+}
+
+const handleEditKeydown = (
+  event: KeyboardEvent,
+  item: FloatingCountrySidebarItem,
+  stat: FloatingCountrySidebarStat,
+) => {
+  if (event.key === 'Enter') {
+    event.preventDefault()
+    commitEdit(item, stat)
+  } else if (event.key === 'Escape') {
+    event.preventDefault()
+    cancelEdit()
+  }
+}
 </script>
 
 <template>
@@ -117,9 +170,29 @@ const buildItemStyle = (item: FloatingCountrySidebarItem) =>
                   v-for="stat in item.stats"
                   :key="stat.label"
                   class="floating-country-sidebar__stat"
+                  :class="{ 'is-editing': isEditing(item, stat) }"
                 >
                   <dt>{{ stat.label }}</dt>
-                  <dd>{{ stat.value }}</dd>
+                  <dd
+                    v-if="!isEditing(item, stat)"
+                    class="floating-country-sidebar__stat-value"
+                    tabindex="0"
+                    role="button"
+                    :aria-label="`编辑 ${item.name} 的${stat.label}`"
+                    @click="startEditing(item, stat)"
+                    @keydown.enter.prevent="startEditing(item, stat)"
+                  >
+                    {{ stat.value }}
+                  </dd>
+                  <input
+                    v-else
+                    ref="editInputRef"
+                    v-model="editValue"
+                    class="floating-country-sidebar__stat-input"
+                    type="text"
+                    @keydown="handleEditKeydown($event, item, stat)"
+                    @blur="commitEdit(item, stat)"
+                  />
                 </div>
               </dl>
             </div>
@@ -313,11 +386,43 @@ const buildItemStyle = (item: FloatingCountrySidebarItem) =>
 .floating-country-sidebar__stat dt {
   color: var(--color-text);
   opacity: 0.75;
+  flex-shrink: 0;
 }
 
-.floating-country-sidebar__stat dd {
+.floating-country-sidebar__stat-value {
   font-weight: 700;
   text-align: right;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+  min-width: 40px;
+  transition: background 0.15s ease;
+}
+
+.floating-country-sidebar__stat-value:hover,
+.floating-country-sidebar__stat-value:focus-visible {
+  background: color-mix(in srgb, var(--country-color) 18%, var(--color-background));
+  outline: none;
+}
+
+.floating-country-sidebar__stat-input {
+  font-weight: 700;
+  text-align: right;
+  border: 1px solid var(--country-color);
+  border-radius: 6px;
+  background: var(--color-background);
+  color: var(--color-text);
+  padding: 2px 6px;
+  font: inherit;
+  font-size: 13px;
+  width: 100%;
+  min-width: 60px;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.floating-country-sidebar__stat.is-editing {
+  background: color-mix(in srgb, var(--country-color) 20%, var(--color-background));
 }
 
 .floating-country-sidebar__empty {

@@ -6,9 +6,10 @@ import { useAiSettings } from '@/composables/ai-settings'
 import { defaultEventDrivePrompt } from '@/composables/prompt-defaults'
 import { submitPreparedPrompt } from '@/utils/submit-commition'
 import FloatingCountrySidebar, {
+  type FloatingCountrySidebarEditStatPayload,
   type FloatingCountrySidebarItem,
 } from '@/components/floating-country-sidebar/floating-country-sidebar.vue'
-import type { CountryIndicatorData } from '@/types/country'
+import type { CountryEventTriggerChangeData, CountryIndicatorData } from '@/types/country'
 
 type ChatRole = 'user' | 'assistant'
 
@@ -941,8 +942,13 @@ const loadChatWindowDraft = () => {
   }
 }
 
-const submitChatContent = async (content: string, options?: { visibleInChat?: boolean }) => {
+const submitChatContent = async (
+  content: string,
+  options?: { visibleInChat?: boolean; suppressAssistantReply?: boolean; modelOverride?: string },
+) => {
   const visibleInChat = options?.visibleInChat ?? true
+  const suppressAssistantReply = options?.suppressAssistantReply ?? false
+  const modelOverride = options?.modelOverride
   const trimmedContent = content.trim()
   const hasHiddenPrompt = hiddenPromptMessages.value.length > 0
 
@@ -969,7 +975,7 @@ const submitChatContent = async (content: string, options?: { visibleInChat?: bo
   await scrollToBottom()
 
   try {
-    const response = await submitPreparedPrompt(buildPreparedPrompt())
+    const response = await submitPreparedPrompt(buildPreparedPrompt(modelOverride))
 
     if (!response?.trim()) {
       errorText.value = '模型没有返回有效结果。'
@@ -980,16 +986,18 @@ const submitChatContent = async (content: string, options?: { visibleInChat?: bo
       return false
     }
 
-    chatMessages.value.push({
-      role: 'assistant',
-      content: response.trim(),
-    })
+    if (!suppressAssistantReply) {
+      chatMessages.value.push({
+        role: 'assistant',
+        content: response.trim(),
+      })
 
-    // 尝试解析并应用 AI 在回复中包含的指标变更 JSON（如果存在）
-    try {
-      await handleAssistantResponse(response.trim())
-    } catch (error) {
-      console.error('处理 AI 回复中的指标变更时发生错误', error)
+      // 尝试解析并应用 AI 在回复中包含的指标变更 JSON（如果存在）
+      try {
+        await handleAssistantResponse(response.trim())
+      } catch (error) {
+        console.error('处理 AI 回复中的指标变更时发生错误', error)
+      }
     }
 
     return true
@@ -1035,9 +1043,9 @@ const resetChat = async () => {
   await scrollToBottom()
 }
 
-const buildPreparedPrompt = () => ({
+const buildPreparedPrompt = (modelOverride?: string) => ({
   provider: selectedProvider.value,
-  model: selectedModel.value,
+  model: modelOverride ?? selectedModel.value,
   messages: [
     {
       role: 'system' as const,
@@ -1051,6 +1059,21 @@ const buildPreparedPrompt = () => ({
     })),
   ],
 })
+
+const sendSilentInstructionToAi = async (instruction: string) => {
+  hiddenPromptMessages.value = [
+    {
+      role: 'user',
+      content: instruction,
+    },
+  ]
+
+  return submitChatContent('', {
+    visibleInChat: false,
+    suppressAssistantReply: true,
+    modelOverride: 'deepseek-chat',
+  })
+}
 
 const buildPromptReinjectionMessage = () =>
   [
@@ -1079,6 +1102,89 @@ const reinjectPrompt = async () => {
   const sent = await submitChatContent('', { visibleInChat: false })
 
   if (sent) {
+    errorText.value = ''
+  }
+}
+
+const statLabelToIndicatorKey = (label: string) => {
+  if (label === '政治稳定') return '政治稳定'
+  if (label === '经济状况') return '经济发展'
+  if (label === '国际影响') return '国际影响'
+  return null
+}
+
+const handleEditStat = async (payload: FloatingCountrySidebarEditStatPayload) => {
+  const { item, label, newValue } = payload
+  const countryName = item.name
+
+  if (!countryName || isSending.value) {
+    return
+  }
+
+  const indicatorKey = statLabelToIndicatorKey(label)
+
+  if (indicatorKey) {
+    // 数值型指标字段
+    const parsed = parseFloat(newValue)
+    if (!Number.isFinite(parsed)) {
+      errorText.value = `${label} 必须为有效数字。`
+      return
+    }
+
+    const current = activeCountryIndicators.value[countryName]
+    activeCountryIndicators.value = {
+      ...activeCountryIndicators.value,
+      [countryName]: {
+        政治稳定: current?.政治稳定 ?? 0,
+        经济发展: current?.经济发展 ?? 0,
+        国际影响: current?.国际影响 ?? 0,
+        [indicatorKey]: parsed,
+      },
+    }
+
+    // 同步到 activeWorldPayload
+    try {
+      const countries = getCountriesFromPayload(activeWorldPayload.value)
+      for (const country of countries) {
+        if (!isRecord(country)) continue
+        const name = typeof country.国家名称 === 'string' ? country.国家名称.trim() : ''
+        if (name === countryName) {
+          const existing = isCountryIndicatorData(country.国家指标)
+            ? country.国家指标
+            : { 政治稳定: 0, 经济发展: 0, 国际影响: 0 }
+          country.国家指标 = { ...existing, [indicatorKey]: parsed }
+          break
+        }
+      }
+    } catch (error) {
+      console.error('同步指标到 activeWorldPayload 失败', error)
+    }
+
+    saveCurrentWorldArchive()
+    await sendSilentInstructionToAi(`${countryName}的${label}已变为${newValue}`)
+    errorText.value = ''
+  } else {
+    // 文本字段 — 直接写入国家记录
+    const countries = getCountriesFromPayload(activeWorldPayload.value)
+    let found = false
+
+    for (const country of countries) {
+      if (!isRecord(country)) continue
+      const name = typeof country.国家名称 === 'string' ? country.国家名称.trim() : ''
+      if (name === countryName) {
+        country[label] = newValue
+        found = true
+        break
+      }
+    }
+
+    if (!found) {
+      errorText.value = `未找到国家 ${countryName}。`
+      return
+    }
+
+    saveCurrentWorldArchive()
+    await sendSilentInstructionToAi(`${countryName}的${label}已变为${newValue}`)
     errorText.value = ''
   }
 }
@@ -1134,7 +1240,15 @@ const handleAssistantResponse = async (responseText: string) => {
 
     const countryName = typeof entry.国家名称 === 'string' ? entry.国家名称.trim() : ''
     const desc = typeof entry.描述 === 'string' ? entry.描述.trim() : ''
-    const indicators = (entry as Record<string, unknown>).国家指标
+    const indicators = (entry as unknown as CountryEventTriggerChangeData).国家指标
+    const politicalSystemChange =
+      typeof entry.政治制度改变 === 'string' && entry.政治制度改变.trim()
+        ? entry.政治制度改变.trim()
+        : ''
+    const economicStatusChange =
+      typeof entry.经济状况改变 === 'string' && entry.经济状况改变.trim()
+        ? entry.经济状况改变.trim()
+        : ''
 
     if (!countryName) {
       failed.push('无效条目：缺少 国家名称')
@@ -1189,6 +1303,14 @@ const handleAssistantResponse = async (responseText: string) => {
             经济发展: indicators.经济发展,
             国际影响: indicators.国际影响,
           }
+
+          if (politicalSystemChange) {
+            country.政治制度 = politicalSystemChange
+          }
+
+          if (economicStatusChange) {
+            country.经济状况 = economicStatusChange
+          }
           break
         }
       }
@@ -1207,9 +1329,16 @@ const handleAssistantResponse = async (responseText: string) => {
       indicators.经济发展,
     )}, 国际影响=${formatIndicatorValue(indicators.国际影响)}`
 
+    const extraSummary = [
+      politicalSystemChange ? `政治制度=${politicalSystemChange}` : '',
+      economicStatusChange ? `经济状况=${economicStatusChange}` : '',
+    ]
+      .filter(Boolean)
+      .join('；')
+
     chatMessages.value.push({
       role: 'assistant',
-      content: `已应用指标变更：${countryName}；${desc || '无描述'}；${oldSummary}；${newSummary}`,
+      content: `已应用指标变更：${countryName}；${desc || '无描述'}；${oldSummary}；${newSummary}${extraSummary ? `；${extraSummary}` : ''}`,
     })
   }
 
@@ -1442,7 +1571,9 @@ const selectedSnapshotLabel = computed(() => {
                 导出存档
               </button>
               <button class="ghost-button" type="button" @click="resetChat">重置世界</button>
-              <button class="ghost-button" type="button" @click="reinjectPrompt">重新注入提示词</button>
+              <button class="ghost-button" type="button" @click="reinjectPrompt">
+                重新注入提示词
+              </button>
             </div>
           </div>
 
@@ -1519,6 +1650,7 @@ const selectedSnapshotLabel = computed(() => {
       :items="countrySidebarItems"
       title="国家列表"
       empty-text="当前世界没有国家数据"
+      @edit-stat="handleEditStat"
     />
   </main>
 </template>

@@ -56,6 +56,15 @@ export interface CountryIndicatorData {
   国际影响: number
 }
 
+export interface CountryEventTriggerChangeData {
+  国家名称: string
+  描述: string
+  国家指标: CountryIndicatorData
+  政治制度改变?: string
+  经济状况改变?: string
+  校验?: string
+}
+
 export interface Party {
   名称: string
   简介: string
