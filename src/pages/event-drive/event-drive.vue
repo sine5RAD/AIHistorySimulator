@@ -5,6 +5,10 @@ import { useRouter } from 'vue-router'
 import { useAiSettings } from '@/composables/ai-settings'
 import { defaultEventDrivePrompt } from '@/composables/prompt-defaults'
 import { submitPreparedPrompt } from '@/utils/submit-commition'
+import FloatingCountrySidebar, {
+  type FloatingCountrySidebarItem,
+} from '@/components/floating-country-sidebar/floating-country-sidebar.vue'
+import type { CountryIndicatorData } from '@/types/country'
 
 type ChatRole = 'user' | 'assistant'
 
@@ -50,6 +54,7 @@ interface WorldLandTransferState {
 
 interface EventDriveArchiveEntry {
   world: WorldLandTransferPayload
+  countryIndicators: Record<string, CountryIndicatorData>
   chatInput: string
   chatMessages: ChatMessage[]
   createdAt: string
@@ -87,6 +92,7 @@ const chatMessages = ref<ChatMessage[]>([])
 const hiddenPromptMessages = ref<PromptMessage[]>([])
 const worldContextMessage = ref<PromptMessage | null>(null)
 const activeWorldPayload = ref<WorldLandTransferPayload | null>(null)
+const activeCountryIndicators = ref<Record<string, CountryIndicatorData>>({})
 const activeWorldKey = ref('')
 const isSending = ref(false)
 const errorText = ref('')
@@ -97,6 +103,140 @@ const selectedSnapshotId = ref(LIVE_SESSION_SNAPSHOT_ID)
 const snapshotMenuOpen = ref(false)
 const pendingWorldLandPayload = ref<WorldLandTransferPayload | null>(null)
 const pendingWorldLandSource = ref<'session' | 'local' | null>(null)
+
+const formatIndicatorValue = (value: number) => {
+  if (!Number.isFinite(value)) {
+    return '0'
+  }
+
+  return Number.isInteger(value) ? `${value}` : value.toFixed(2)
+}
+
+const formatBriefSummary = (value: unknown) => {
+  if (!value || typeof value !== 'object') {
+    return '暂无可展示的简略信息'
+  }
+
+  const record = value as Record<string, unknown>
+  const pieces: string[] = []
+
+  if (typeof record.国歌 === 'string' && record.国歌.trim()) {
+    pieces.push(`国歌：${record.国歌.trim()}`)
+  }
+
+  if (typeof record.货币 === 'string' && record.货币.trim()) {
+    pieces.push(`货币：${record.货币.trim()}`)
+  }
+
+  return pieces.length ? pieces.join(' · ') : '暂无可展示的简略信息'
+}
+
+const getTrimmedTextField = (record: Record<string, unknown>, key: string) => {
+  const value = record[key]
+
+  return typeof value === 'string' && value.trim() ? value.trim() : '暂无'
+}
+
+const getCountriesFromPayload = (payload: WorldLandTransferPayload | null): unknown[] => {
+  if (!payload || typeof payload !== 'object') {
+    return []
+  }
+
+  if (Array.isArray(payload.countries)) {
+    return payload.countries
+  }
+
+  if (payload.world && typeof payload.world === 'object') {
+    const nestedWorld = payload.world as { countries?: unknown }
+
+    if (Array.isArray(nestedWorld.countries)) {
+      return nestedWorld.countries
+    }
+  }
+
+  return []
+}
+
+const getCountryColorMapFromPayload = (
+  payload: WorldLandTransferPayload | null,
+): Record<string, string> => {
+  if (!payload || typeof payload !== 'object') {
+    return {}
+  }
+
+  const extractColorMap = (value: unknown) => {
+    if (!isRecord(value)) {
+      return {}
+    }
+
+    const colorMap: Record<string, string> = {}
+
+    for (const [countryName, colorValue] of Object.entries(value)) {
+      if (typeof colorValue === 'string' && countryName.trim() && colorValue.trim()) {
+        colorMap[countryName.trim()] = colorValue.trim()
+      }
+    }
+
+    return colorMap
+  }
+
+  const topLevelColorMap = extractColorMap(payload.countryColorMap)
+  if (Object.keys(topLevelColorMap).length > 0) {
+    return topLevelColorMap
+  }
+
+  if (payload.world && typeof payload.world === 'object') {
+    const nestedWorld = payload.world as { countryColorMap?: unknown }
+    const nestedColorMap = extractColorMap(nestedWorld.countryColorMap)
+
+    if (Object.keys(nestedColorMap).length > 0) {
+      return nestedColorMap
+    }
+  }
+
+  return {}
+}
+
+const countrySidebarItems = computed<FloatingCountrySidebarItem[]>(() => {
+  const countries = getCountriesFromPayload(activeWorldPayload.value)
+
+  if (!countries.length) {
+    return []
+  }
+
+  return countries.map((country, index) => {
+    const record = isRecord(country) ? country : {}
+    const countryName =
+      typeof record.国家名称 === 'string' && record.国家名称.trim()
+        ? record.国家名称.trim()
+        : `未命名国家 ${index + 1}`
+    const indicators = activeCountryIndicators.value[countryName]
+    const colorMap = getCountryColorMapFromPayload(activeWorldPayload.value)
+
+    return {
+      id: countryName,
+      name: countryName,
+      color: colorMap[countryName],
+      stats: [
+        { label: '政治制度', value: getTrimmedTextField(record, '政治制度') },
+        { label: '经济制度', value: getTrimmedTextField(record, '经济制度') },
+        {
+          label: '政治稳定',
+          value: indicators ? formatIndicatorValue(indicators.政治稳定) : '暂无',
+        },
+        {
+          label: '经济状况',
+          value: indicators ? formatIndicatorValue(indicators.经济发展) : '暂无',
+        },
+        {
+          label: '国际影响',
+          value: indicators ? formatIndicatorValue(indicators.国际影响) : '暂无',
+        },
+      ],
+      summary: formatBriefSummary(record),
+    }
+  })
+})
 
 const systemPrompt = defaultEventDrivePrompt
 
@@ -123,6 +263,76 @@ const goToSetting = () => {
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === 'object' && !Array.isArray(value)
+
+const isCountryIndicatorData = (value: unknown): value is CountryIndicatorData =>
+  isRecord(value) &&
+  typeof value.政治稳定 === 'number' &&
+  typeof value.经济发展 === 'number' &&
+  typeof value.国际影响 === 'number'
+
+const normalizeCountryIndicators = (value: unknown): Record<string, CountryIndicatorData> => {
+  if (!isRecord(value)) {
+    return {}
+  }
+
+  const indicators: Record<string, CountryIndicatorData> = {}
+
+  for (const [countryName, indicatorValue] of Object.entries(value)) {
+    if (!countryName.trim() || !isCountryIndicatorData(indicatorValue)) {
+      continue
+    }
+
+    indicators[countryName.trim()] = {
+      政治稳定: indicatorValue.政治稳定,
+      经济发展: indicatorValue.经济发展,
+      国际影响: indicatorValue.国际影响,
+    }
+  }
+
+  return indicators
+}
+
+const resolveCountryIndicators = (entryValue: unknown, payload: WorldLandTransferPayload) => {
+  const normalizedIndicators = normalizeCountryIndicators(entryValue)
+
+  return Object.keys(normalizedIndicators).length > 0
+    ? normalizedIndicators
+    : extractCountryIndicatorsFromWorld(payload)
+}
+
+const extractCountryIndicatorsFromWorld = (
+  payload: WorldLandTransferPayload | null,
+): Record<string, CountryIndicatorData> => {
+  const countries = getCountriesFromPayload(payload)
+
+  if (!countries.length) {
+    return {}
+  }
+
+  const indicators: Record<string, CountryIndicatorData> = {}
+
+  for (const countryValue of countries) {
+    if (!isRecord(countryValue)) {
+      continue
+    }
+
+    const countryName =
+      typeof countryValue.国家名称 === 'string' ? countryValue.国家名称.trim() : ''
+    const indicatorValue = countryValue.国家指标
+
+    if (!countryName || !isCountryIndicatorData(indicatorValue)) {
+      continue
+    }
+
+    indicators[countryName] = {
+      政治稳定: indicatorValue.政治稳定,
+      经济发展: indicatorValue.经济发展,
+      国际影响: indicatorValue.国际影响,
+    }
+  }
+
+  return indicators
+}
 
 const getWorldArchiveKey = (payload: WorldLandTransferPayload | null) => {
   if (!payload) {
@@ -179,6 +389,10 @@ const readEventDriveArchive = (): EventDriveArchive => {
 
       archive[worldKey] = {
         world: world as WorldLandTransferPayload,
+        countryIndicators: resolveCountryIndicators(
+          entryValue.countryIndicators,
+          world as WorldLandTransferPayload,
+        ),
         chatInput: typeof entryValue.chatInput === 'string' ? entryValue.chatInput : '',
         chatMessages,
         createdAt:
@@ -348,6 +562,7 @@ const clearActiveWorldContext = () => {
   window.localStorage.removeItem(WORLD_PACKAGE_TRANSFER_KEY)
   window.sessionStorage.removeItem(WORLD_PACKAGE_TRANSFER_KEY)
   activeWorldPayload.value = null
+  activeCountryIndicators.value = {}
   activeWorldKey.value = ''
   worldContextMessage.value = null
 }
@@ -388,6 +603,7 @@ const saveCurrentWorldArchive = () => {
 
   archive[archiveKey] = {
     world: worldPayload,
+    countryIndicators: { ...activeCountryIndicators.value },
     chatInput: chatInput.value,
     chatMessages: chatMessages.value,
     createdAt: existingEntry?.createdAt ?? now,
@@ -417,6 +633,7 @@ const removeCurrentWorldArchive = (archiveKey: string) => {
 
 const setActiveWorldContext = (payload: WorldLandTransferPayload) => {
   activeWorldPayload.value = payload
+  activeCountryIndicators.value = extractCountryIndicatorsFromWorld(payload)
   activeWorldKey.value = getWorldArchiveKey(payload)
   worldContextMessage.value = {
     role: 'user',
@@ -433,6 +650,7 @@ const setActiveWorldContext = (payload: WorldLandTransferPayload) => {
 
 const applyArchiveEntry = (worldKey: string, entry: EventDriveArchiveEntry) => {
   setActiveWorldContext(entry.world)
+  activeCountryIndicators.value = resolveCountryIndicators(entry.countryIndicators, entry.world)
   activeWorldKey.value = worldKey
   chatMessages.value = entry.chatMessages
   chatInput.value = entry.chatInput
@@ -498,6 +716,10 @@ const extractImportedArchive = (payload: unknown): EventDriveArchive => {
 
     archive[worldKey] = {
       world: world as WorldLandTransferPayload,
+      countryIndicators: resolveCountryIndicators(
+        entryValue.countryIndicators,
+        world as WorldLandTransferPayload,
+      ),
       chatInput: typeof entryValue.chatInput === 'string' ? entryValue.chatInput : '',
       chatMessages,
       createdAt:
@@ -1096,6 +1318,13 @@ const selectedSnapshotLabel = computed(() => {
         </aside>
       </aside>
     </div>
+
+    <FloatingCountrySidebar
+      v-if="countrySidebarItems.length"
+      :items="countrySidebarItems"
+      title="国家列表"
+      empty-text="当前世界没有国家数据"
+    />
   </main>
 </template>
 

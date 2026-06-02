@@ -311,6 +311,12 @@ const createEmptyEthnicGroupData = () => ({
 
 const createNormalizedCountry = (country: Partial<CountryData> = {}): CountryData => ({
   国家名称: country.国家名称 ?? '',
+  AI控制: country.AI控制 ?? false,
+  国家指标: {
+    政治稳定: country.国家指标?.政治稳定 ?? 0,
+    经济发展: country.国家指标?.经济发展 ?? 0,
+    国际影响: country.国家指标?.国际影响 ?? 0,
+  },
   人口: {
     总数: country.人口?.总数 ?? 0,
     种族比例: { ...country.人口?.种族比例 },
@@ -2395,6 +2401,34 @@ onMounted(() => {
         </div>
 
         <article v-if="worldData.countries.length" :key="currentCountryIndex" class="country-card">
+          <div class="country-control-row">
+            <label class="country-control-label">
+              <input v-model="currentCountry.AI控制" type="checkbox" />
+              <span>AI控制</span>
+            </label>
+            <span class="country-control-hint">勾选表示 AI 控制，不勾选表示玩家操作</span>
+          </div>
+
+          <section class="json-section country-metrics-section">
+            <div class="json-section-header">
+              <h3>国家指标</h3>
+            </div>
+            <div class="field-grid">
+              <div class="field-block">
+                <label class="field-label">政治稳定</label>
+                <input v-model.number="currentCountry.国家指标.政治稳定" class="field-input" type="number" step="0.1" />
+              </div>
+              <div class="field-block">
+                <label class="field-label">经济发展</label>
+                <input v-model.number="currentCountry.国家指标.经济发展" class="field-input" type="number" step="0.1" />
+              </div>
+              <div class="field-block">
+                <label class="field-label">国际影响</label>
+                <input v-model.number="currentCountry.国家指标.国际影响" class="field-input" type="number" step="0.1" />
+              </div>
+            </div>
+          </section>
+
           <div class="country-header">
             <div class="country-title-block">
               <label class="field-label" :for="`country-name-${currentCountryIndex}`"
@@ -3022,6 +3056,30 @@ onMounted(() => {
   justify-content: space-between;
   gap: 16px;
   margin-bottom: 16px;
+}
+
+.country-control-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.country-control-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.country-control-hint {
+  color: var(--color-text-secondary);
+  font-size: 0.9rem;
+}
+
+.country-metrics-section {
+  margin-top: 0;
 }
 
 .country-title-block {

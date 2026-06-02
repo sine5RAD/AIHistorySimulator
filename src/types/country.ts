@@ -49,6 +49,13 @@ export interface EthnicGroupData {
   文化: string
   宗教: string
 }
+
+export interface CountryIndicatorData {
+  政治稳定: number
+  经济发展: number
+  国际影响: number
+}
+
 export interface Party {
   名称: string
   简介: string
@@ -57,6 +64,8 @@ export interface Party {
 
 export interface CountryData {
   国家名称: string
+  AI控制: boolean
+  国家指标: CountryIndicatorData
   人口: PopulationData
   政治制度: string
   经济状况: string
@@ -74,6 +83,12 @@ export interface CountryData {
 
 export const createEmptyCountryData = (): CountryData => ({
   国家名称: '',
+  AI控制: false,
+  国家指标: {
+    政治稳定: 0,
+    经济发展: 0,
+    国际影响: 0,
+  },
   人口: {
     总数: 0,
     种族比例: {},
