@@ -28,6 +28,11 @@ const router = createRouter({
       component: () => import('../pages/event-drive/event-drive.vue'),
     },
     {
+      path: '/pages/world-map',
+      name: 'world-map',
+      component: () => import('../pages/world-map/world-map.vue'),
+    },
+    {
       path: '/pages/setting',
       name: 'setting',
       component: () => import('../pages/local-setting/local-setting.vue'),

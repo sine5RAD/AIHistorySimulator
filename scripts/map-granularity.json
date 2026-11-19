@@ -1,0 +1,1473 @@
+{
+  "targetAreaKm2": 26000,
+  "band": 1.8,
+  "windowLow": 5,
+  "windowHigh": 4.2,
+  "smallAreaKm2": 100000,
+  "generatedAt": "2026-11-19T13:06:16.135Z",
+  "source": "geoBoundaries gbOpen + 阿里云 DataV，按平均单元面积统一粒度",
+  "countries": {
+    "AFG": {
+      "level": 1,
+      "units": 34,
+      "meanAreaKm2": 18951,
+      "canonical": "Wilayat",
+      "inBand": true,
+      "note": "切换到 ADM1"
+    },
+    "AGO": {
+      "level": 2,
+      "units": 158,
+      "meanAreaKm2": 7898,
+      "canonical": "Municipality",
+      "inBand": true,
+      "note": "保持 ADM2"
+    },
+    "ALB": {
+      "level": 1,
+      "units": 12,
+      "meanAreaKm2": 2386,
+      "canonical": "Qarqet",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "ARG": {
+      "level": 2,
+      "units": 526,
+      "meanAreaKm2": 5290,
+      "canonical": "departments",
+      "inBand": true,
+      "note": "保持 ADM2"
+    },
+    "ARM": {
+      "level": 1,
+      "units": 11,
+      "meanAreaKm2": 2661,
+      "canonical": "Province and City",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "AUS": {
+      "level": 2,
+      "units": 547,
+      "meanAreaKm2": 14055,
+      "canonical": "Local Government Areas",
+      "inBand": true,
+      "note": "保持 ADM2"
+    },
+    "AUT": {
+      "level": 1,
+      "units": 9,
+      "meanAreaKm2": 9327,
+      "canonical": "Bundesländer",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "AZE": {
+      "level": 1,
+      "units": 2,
+      "meanAreaKm2": 49536,
+      "canonical": "Contiguous Regions",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "BDI": {
+      "level": 1,
+      "units": 18,
+      "meanAreaKm2": 1392,
+      "canonical": "Province",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "BEL": {
+      "level": 1,
+      "units": 3,
+      "meanAreaKm2": 10252,
+      "canonical": "Region",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "BEN": {
+      "level": 1,
+      "units": 12,
+      "meanAreaKm2": 9629,
+      "canonical": "Departments",
+      "inBand": true,
+      "note": "切换到 ADM1"
+    },
+    "BFA": {
+      "level": 1,
+      "units": 13,
+      "meanAreaKm2": 21029,
+      "canonical": "Region",
+      "inBand": true,
+      "note": "切换到 ADM1"
+    },
+    "BGD": {
+      "level": 1,
+      "units": 8,
+      "meanAreaKm2": 17528,
+      "canonical": "Division",
+      "inBand": true,
+      "note": "切换到 ADM1"
+    },
+    "BGR": {
+      "level": 1,
+      "units": 28,
+      "meanAreaKm2": 3963,
+      "canonical": "Province",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "BHS": {
+      "level": 2,
+      "units": 34,
+      "meanAreaKm2": 406,
+      "canonical": "Second Schedule Districts & Third Schedule Districts",
+      "inBand": false,
+      "note": "保持 ADM2"
+    },
+    "BIH": {
+      "level": 1,
+      "units": 3,
+      "meanAreaKm2": 17149,
+      "canonical": "gbOpen",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "BLR": {
+      "level": 1,
+      "units": 7,
+      "meanAreaKm2": 29677,
+      "canonical": "Oblast",
+      "inBand": false,
+      "note": "手动指定 ADM1",
+      "pinned": true
+    },
+    "BLZ": {
+      "level": 1,
+      "units": 6,
+      "meanAreaKm2": 3699,
+      "canonical": "Districts",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "BOL": {
+      "level": 2,
+      "units": 110,
+      "meanAreaKm2": 9716,
+      "canonical": "Unknown",
+      "inBand": true,
+      "note": "保持 ADM2"
+    },
+    "BRA": {
+      "level": 2,
+      "units": 5570,
+      "meanAreaKm2": 1526,
+      "canonical": "municipality",
+      "inBand": false,
+      "note": "保持 ADM2"
+    },
+    "BRN": {
+      "level": 1,
+      "units": 4,
+      "meanAreaKm2": 1468,
+      "canonical": "Districts",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "BTN": {
+      "level": 1,
+      "units": 20,
+      "meanAreaKm2": 1997,
+      "canonical": "Dzongdeys",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "BWA": {
+      "level": 2,
+      "units": 25,
+      "meanAreaKm2": 23123,
+      "canonical": "Unknown",
+      "inBand": true,
+      "note": "保持 ADM2"
+    },
+    "CAF": {
+      "level": 1,
+      "units": 17,
+      "meanAreaKm2": 36455,
+      "canonical": "Prefecture and Commune",
+      "inBand": true,
+      "note": "切换到 ADM1"
+    },
+    "CAN": {
+      "level": 2,
+      "units": 76,
+      "meanAreaKm2": 129981,
+      "canonical": "Divisions",
+      "inBand": false,
+      "note": "保持 ADM2"
+    },
+    "CHE": {
+      "level": 1,
+      "units": 26,
+      "meanAreaKm2": 1588,
+      "canonical": "Canton",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "CHL": {
+      "level": 2,
+      "units": 56,
+      "meanAreaKm2": 13471,
+      "canonical": "Unknown",
+      "inBand": true,
+      "note": "保持 ADM2"
+    },
+    "CHN": {
+      "level": 2,
+      "units": null,
+      "meanAreaKm2": null,
+      "canonical": "地级市",
+      "source": "datav",
+      "note": "手动指定 ADM2",
+      "pinned": true
+    },
+    "CIV": {
+      "level": 1,
+      "units": 14,
+      "meanAreaKm2": 22972,
+      "canonical": "districts de Côte d’Ivoire",
+      "inBand": true,
+      "note": "切换到 ADM1"
+    },
+    "CMR": {
+      "level": 1,
+      "units": 10,
+      "meanAreaKm2": 46574,
+      "canonical": "Region",
+      "inBand": true,
+      "note": "切换到 ADM1"
+    },
+    "COD": {
+      "level": 2,
+      "units": 189,
+      "meanAreaKm2": 12330,
+      "canonical": "territory, city",
+      "inBand": true,
+      "note": "保持 ADM2"
+    },
+    "COG": {
+      "level": 1,
+      "units": 12,
+      "meanAreaKm2": 28606,
+      "canonical": "Départements",
+      "inBand": true,
+      "note": "切换到 ADM1"
+    },
+    "COL": {
+      "level": 1,
+      "units": 33,
+      "meanAreaKm2": 34472,
+      "canonical": "Departments",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "COM": {
+      "level": 1,
+      "units": 3,
+      "meanAreaKm2": 550,
+      "canonical": "Unknown",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "CPV": {
+      "level": 1,
+      "units": 22,
+      "meanAreaKm2": 185,
+      "canonical": "Unknown",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "CRI": {
+      "level": 1,
+      "units": 7,
+      "meanAreaKm2": 7298,
+      "canonical": "Unknown",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "CUB": {
+      "level": 1,
+      "units": 16,
+      "meanAreaKm2": 6930,
+      "canonical": "Unknown",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "CYP": {
+      "level": 1,
+      "units": 6,
+      "meanAreaKm2": 1497,
+      "canonical": "Unknown",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "CZE": {
+      "level": 1,
+      "units": 14,
+      "meanAreaKm2": 5634,
+      "canonical": "regions",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "DEU": {
+      "level": 1,
+      "units": 16,
+      "meanAreaKm2": 22358,
+      "canonical": "Länder",
+      "inBand": true,
+      "note": "切换到 ADM1"
+    },
+    "DJI": {
+      "level": 1,
+      "units": 6,
+      "meanAreaKm2": 3641,
+      "canonical": "Regions",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "DNK": {
+      "level": 1,
+      "units": 5,
+      "meanAreaKm2": 8579,
+      "canonical": "Unknown",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "DOM": {
+      "level": 1,
+      "units": 32,
+      "meanAreaKm2": 1514,
+      "canonical": "Province",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "DZA": {
+      "level": 2,
+      "units": 48,
+      "meanAreaKm2": 48174,
+      "canonical": "the People's Democratic Republic of Algeria",
+      "inBand": true,
+      "note": "保持 ADM2"
+    },
+    "ECU": {
+      "level": 1,
+      "units": 24,
+      "meanAreaKm2": 10665,
+      "canonical": "Province",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "EGY": {
+      "level": 1,
+      "units": 27,
+      "meanAreaKm2": 37037,
+      "canonical": "Unknown",
+      "inBand": true,
+      "note": "切换到 ADM1"
+    },
+    "ERI": {
+      "level": 1,
+      "units": 6,
+      "meanAreaKm2": 20066,
+      "canonical": "Unknown",
+      "inBand": true,
+      "note": "切换到 ADM1"
+    },
+    "ESP": {
+      "level": 1,
+      "units": 19,
+      "meanAreaKm2": 26633,
+      "canonical": "Unknown",
+      "inBand": true,
+      "note": "切换到 ADM1"
+    },
+    "EST": {
+      "level": 1,
+      "units": 15,
+      "meanAreaKm2": 2898,
+      "canonical": "Unknown",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "ETH": {
+      "level": 2,
+      "units": 74,
+      "meanAreaKm2": 15221,
+      "canonical": "Unknown",
+      "inBand": true,
+      "note": "保持 ADM2"
+    },
+    "FIN": {
+      "level": 1,
+      "units": 19,
+      "meanAreaKm2": 17760,
+      "canonical": "Unknown",
+      "inBand": true,
+      "note": "切换到 ADM1"
+    },
+    "FJI": {
+      "level": 1,
+      "units": 4,
+      "meanAreaKm2": 4844,
+      "canonical": "Divisions",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "FRA": {
+      "level": 1,
+      "units": 13,
+      "meanAreaKm2": 42243,
+      "canonical": "Region",
+      "inBand": true,
+      "note": "切换到 ADM1"
+    },
+    "FSM": {
+      "level": 1,
+      "units": 4,
+      "meanAreaKm2": 172,
+      "canonical": "State",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "GAB": {
+      "level": 1,
+      "units": 9,
+      "meanAreaKm2": 28788,
+      "canonical": "Provinces",
+      "inBand": true,
+      "note": "切换到 ADM1"
+    },
+    "GBR": {
+      "level": 1,
+      "units": 4,
+      "meanAreaKm2": 61129,
+      "canonical": "Country",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "GEO": {
+      "level": 1,
+      "units": 12,
+      "meanAreaKm2": 5819,
+      "canonical": "Autonomous Republic, Region, City",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "GHA": {
+      "level": 1,
+      "units": 16,
+      "meanAreaKm2": 14922,
+      "canonical": "Region",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "GIN": {
+      "level": 1,
+      "units": 8,
+      "meanAreaKm2": 30598,
+      "canonical": "Administrative regions and governate",
+      "inBand": true,
+      "note": "切换到 ADM1"
+    },
+    "GMB": {
+      "level": 1,
+      "units": 8,
+      "meanAreaKm2": 1321,
+      "canonical": "Local Government Areas",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "GNB": {
+      "level": 1,
+      "units": 9,
+      "meanAreaKm2": 3919,
+      "canonical": "Regiões",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "GNQ": {
+      "level": 1,
+      "units": 7,
+      "meanAreaKm2": 3862,
+      "canonical": "Unknown",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "GRC": {
+      "level": 1,
+      "units": 8,
+      "meanAreaKm2": 16476,
+      "canonical": "Decentralized administration",
+      "inBand": true,
+      "note": "切换到 ADM1"
+    },
+    "GTM": {
+      "level": 1,
+      "units": 22,
+      "meanAreaKm2": 4906,
+      "canonical": "Unknown",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "GUM": {
+      "level": 2,
+      "units": 19,
+      "meanAreaKm2": 29,
+      "canonical": "Village",
+      "inBand": false,
+      "note": "保持 ADM2"
+    },
+    "GUY": {
+      "level": 1,
+      "units": 10,
+      "meanAreaKm2": 21073,
+      "canonical": "Regions",
+      "inBand": true,
+      "note": "切换到 ADM1"
+    },
+    "HKG": {
+      "level": 2,
+      "meanAreaKm2": 71,
+      "units": 18,
+      "canonical": "区",
+      "source": "阿里云 DataV areas_v3",
+      "note": "城市级特别行政区，保持区级划分"
+    },
+    "HND": {
+      "level": 1,
+      "units": 18,
+      "meanAreaKm2": 6223,
+      "canonical": "Departments",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "HRV": {
+      "level": 1,
+      "units": 21,
+      "meanAreaKm2": 2686,
+      "canonical": "Croatia",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "HTI": {
+      "level": 1,
+      "units": 10,
+      "meanAreaKm2": 2692,
+      "canonical": "Departments",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "HUN": {
+      "level": 1,
+      "units": 20,
+      "meanAreaKm2": 4632,
+      "canonical": "County",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "IDN": {
+      "level": 1,
+      "units": 34,
+      "meanAreaKm2": 55592,
+      "canonical": "Unknown",
+      "inBand": true,
+      "note": "切换到 ADM1"
+    },
+    "IND": {
+      "level": 1,
+      "units": 36,
+      "meanAreaKm2": 90836,
+      "canonical": "State / Union Territory",
+      "inBand": true,
+      "note": "切换到 ADM1"
+    },
+    "IRL": {
+      "level": 1,
+      "units": 4,
+      "meanAreaKm2": 17571,
+      "canonical": "Province",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "IRN": {
+      "level": 1,
+      "units": 33,
+      "meanAreaKm2": 49192,
+      "canonical": "ostānhā / provinces",
+      "inBand": true,
+      "note": "切换到 ADM1"
+    },
+    "IRQ": {
+      "level": 1,
+      "units": 18,
+      "meanAreaKm2": 24437,
+      "canonical": "Governorates (muḥāfaẓāt)",
+      "inBand": true,
+      "note": "切换到 ADM1"
+    },
+    "ISL": {
+      "level": 1,
+      "units": 8,
+      "meanAreaKm2": 11501,
+      "canonical": "Unknown",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "ISR": {
+      "level": 1,
+      "units": 6,
+      "meanAreaKm2": 3484,
+      "canonical": "Districts",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "ITA": {
+      "level": 2,
+      "units": 20,
+      "meanAreaKm2": 15070,
+      "canonical": "Unknown",
+      "inBand": true,
+      "note": "保持 ADM2"
+    },
+    "JAM": {
+      "level": 1,
+      "units": 14,
+      "meanAreaKm2": 784,
+      "canonical": "parish",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "JOR": {
+      "level": 1,
+      "units": 12,
+      "meanAreaKm2": 7451,
+      "canonical": "Governorate",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "JPN": {
+      "level": 1,
+      "units": 47,
+      "meanAreaKm2": 7929,
+      "canonical": "Prefectures",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "KAZ": {
+      "level": 1,
+      "units": 16,
+      "meanAreaKm2": 169168,
+      "canonical": "Unknown",
+      "inBand": false,
+      "note": "手动指定 ADM1",
+      "pinned": true
+    },
+    "KEN": {
+      "level": 1,
+      "units": 47,
+      "meanAreaKm2": 12572,
+      "canonical": "Counties",
+      "inBand": true,
+      "note": "切换到 ADM1"
+    },
+    "KGZ": {
+      "level": 1,
+      "units": 7,
+      "meanAreaKm2": 28381,
+      "canonical": "Unknown",
+      "inBand": true,
+      "note": "切换到 ADM1"
+    },
+    "KHM": {
+      "level": 1,
+      "units": 25,
+      "meanAreaKm2": 7268,
+      "canonical": "Unknown",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "KIR": {
+      "level": 1,
+      "units": 3,
+      "meanAreaKm2": 296,
+      "canonical": "Unknown",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "KOR": {
+      "level": 1,
+      "units": 17,
+      "meanAreaKm2": 5797,
+      "canonical": "Province",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "KWT": {
+      "level": 1,
+      "units": 6,
+      "meanAreaKm2": 2869,
+      "canonical": "Unknown",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "LAO": {
+      "level": 1,
+      "units": 18,
+      "meanAreaKm2": 12763,
+      "canonical": "Unknown",
+      "inBand": true,
+      "note": "切换到 ADM1"
+    },
+    "LBN": {
+      "level": 1,
+      "units": 9,
+      "meanAreaKm2": 1131,
+      "canonical": "Governorates / Muhafazah",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "LBR": {
+      "level": 1,
+      "units": 15,
+      "meanAreaKm2": 6390,
+      "canonical": "Counties",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "LCA": {
+      "level": 1,
+      "units": 10,
+      "meanAreaKm2": 61,
+      "canonical": "District",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "LKA": {
+      "level": 1,
+      "units": 9,
+      "meanAreaKm2": 7341,
+      "canonical": "Unknown",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "LSO": {
+      "level": 1,
+      "units": 10,
+      "meanAreaKm2": 3055,
+      "canonical": "Unknown",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "LTU": {
+      "level": 1,
+      "units": 10,
+      "meanAreaKm2": 6490,
+      "canonical": "Counties",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "LUX": {
+      "level": 1,
+      "units": 12,
+      "meanAreaKm2": 216,
+      "canonical": "Unknown",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "LVA": {
+      "level": 1,
+      "units": 43,
+      "meanAreaKm2": 1502,
+      "canonical": "Administratīvās teritorijas",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "MAC": {
+      "level": 2,
+      "meanAreaKm2": 6,
+      "units": 8,
+      "canonical": "堂区",
+      "source": "阿里云 DataV areas_v3",
+      "note": "城市级特别行政区，保持区级划分"
+    },
+    "MAR": {
+      "level": 2,
+      "units": 75,
+      "meanAreaKm2": 9104,
+      "canonical": "Unknown",
+      "inBand": true,
+      "note": "保持 ADM2"
+    },
+    "MCO": {
+      "level": 2,
+      "units": 9,
+      "meanAreaKm2": 0,
+      "canonical": "Unknown",
+      "inBand": false,
+      "note": "保持 ADM2"
+    },
+    "MDG": {
+      "level": 1,
+      "units": 22,
+      "meanAreaKm2": 26753,
+      "canonical": "Unknown",
+      "inBand": true,
+      "note": "切换到 ADM1"
+    },
+    "MDV": {
+      "level": 1,
+      "units": 21,
+      "meanAreaKm2": 1438,
+      "canonical": "Unknown",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "MEX": {
+      "level": 1,
+      "units": 32,
+      "meanAreaKm2": 60938,
+      "canonical": "gbOpen",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "MKD": {
+      "level": 1,
+      "units": 8,
+      "meanAreaKm2": 3179,
+      "canonical": "Statistical Region",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "MLI": {
+      "level": 2,
+      "units": 50,
+      "meanAreaKm2": 25086,
+      "canonical": "Cercle",
+      "inBand": true,
+      "note": "保持 ADM2"
+    },
+    "MMR": {
+      "level": 1,
+      "units": 14,
+      "meanAreaKm2": 47754,
+      "canonical": "State",
+      "inBand": true,
+      "note": "切换到 ADM1"
+    },
+    "MNG": {
+      "level": 1,
+      "units": 22,
+      "meanAreaKm2": 71145,
+      "canonical": "Unknown",
+      "inBand": false,
+      "note": "手动指定 ADM1",
+      "pinned": true
+    },
+    "MNP": {
+      "level": 2,
+      "units": 4,
+      "meanAreaKm2": 118,
+      "canonical": "Municipality",
+      "inBand": false,
+      "note": "保持 ADM2"
+    },
+    "MOZ": {
+      "level": 1,
+      "units": 10,
+      "meanAreaKm2": 78727,
+      "canonical": "Unknown",
+      "inBand": true,
+      "note": "切换到 ADM1"
+    },
+    "MRT": {
+      "level": 2,
+      "units": 57,
+      "meanAreaKm2": 18160,
+      "canonical": "Mauritania",
+      "inBand": true,
+      "note": "保持 ADM2"
+    },
+    "MWI": {
+      "level": 1,
+      "units": 3,
+      "meanAreaKm2": 31940,
+      "canonical": "Unknown",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "MYS": {
+      "level": 1,
+      "units": 16,
+      "meanAreaKm2": 20603,
+      "canonical": "Unknown",
+      "inBand": true,
+      "note": "切换到 ADM1"
+    },
+    "NAM": {
+      "level": 1,
+      "units": 14,
+      "meanAreaKm2": 58765,
+      "canonical": "Administrative Division",
+      "inBand": true,
+      "note": "切换到 ADM1"
+    },
+    "NER": {
+      "level": 2,
+      "units": 67,
+      "meanAreaKm2": 17607,
+      "canonical": "Department",
+      "inBand": true,
+      "note": "保持 ADM2"
+    },
+    "NGA": {
+      "level": 1,
+      "units": 37,
+      "meanAreaKm2": 24668,
+      "canonical": "State",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "NIC": {
+      "level": 1,
+      "units": 17,
+      "meanAreaKm2": 7558,
+      "canonical": "Departamentos",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "NLD": {
+      "level": 1,
+      "units": 12,
+      "meanAreaKm2": 3462,
+      "canonical": "Province",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "NOR": {
+      "level": 1,
+      "units": 11,
+      "meanAreaKm2": 29371,
+      "canonical": "Fylke",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "NPL": {
+      "level": 1,
+      "units": 7,
+      "meanAreaKm2": 21093,
+      "canonical": "Provinces",
+      "inBand": true,
+      "note": "切换到 ADM1"
+    },
+    "NZL": {
+      "level": 1,
+      "units": 17,
+      "meanAreaKm2": 15759,
+      "canonical": "Unknown",
+      "inBand": true,
+      "note": "切换到 ADM1"
+    },
+    "OMN": {
+      "level": 1,
+      "units": 7,
+      "meanAreaKm2": 44023,
+      "canonical": "Unknown",
+      "inBand": true,
+      "note": "切换到 ADM1"
+    },
+    "PAK": {
+      "level": 2,
+      "units": 126,
+      "meanAreaKm2": 6953,
+      "canonical": "Districts",
+      "inBand": true,
+      "note": "保持 ADM2"
+    },
+    "PAN": {
+      "level": 1,
+      "units": 13,
+      "meanAreaKm2": 5754,
+      "canonical": "Unknown",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "PER": {
+      "level": 1,
+      "units": 26,
+      "meanAreaKm2": 49679,
+      "canonical": "gbOpen",
+      "inBand": true,
+      "note": "切换到 ADM1"
+    },
+    "PHL": {
+      "level": 1,
+      "units": 17,
+      "meanAreaKm2": 17318,
+      "canonical": "Regions",
+      "inBand": true,
+      "note": "切换到 ADM1"
+    },
+    "PLW": {
+      "level": 1,
+      "units": 16,
+      "meanAreaKm2": 73,
+      "canonical": "Unknown",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "PNG": {
+      "level": 1,
+      "units": 22,
+      "meanAreaKm2": 20997,
+      "canonical": "Provinces",
+      "inBand": true,
+      "note": "切换到 ADM1"
+    },
+    "POL": {
+      "level": 1,
+      "units": 16,
+      "meanAreaKm2": 19499,
+      "canonical": "Unknown",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "PRI": {
+      "level": 2,
+      "units": 78,
+      "meanAreaKm2": 115,
+      "canonical": "Municipality",
+      "inBand": false,
+      "note": "保持 ADM2"
+    },
+    "PRK": {
+      "level": 1,
+      "units": 11,
+      "meanAreaKm2": 11143,
+      "canonical": "Provinces",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "PRT": {
+      "level": 1,
+      "units": 20,
+      "meanAreaKm2": 4611,
+      "canonical": "Unknown",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "PRY": {
+      "level": 1,
+      "units": 18,
+      "meanAreaKm2": 22204,
+      "canonical": "Unknown",
+      "inBand": true,
+      "note": "切换到 ADM1"
+    },
+    "PSE": {
+      "level": 1,
+      "units": 2,
+      "meanAreaKm2": 3003,
+      "canonical": "territory",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "QAT": {
+      "level": 1,
+      "units": 8,
+      "meanAreaKm2": 1444,
+      "canonical": "Unknown",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "ROU": {
+      "level": 1,
+      "units": 42,
+      "meanAreaKm2": 5676,
+      "canonical": "Counties",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "RUS": {
+      "level": 1,
+      "units": 83,
+      "meanAreaKm2": 203739,
+      "canonical": "Unknown",
+      "inBand": false,
+      "note": "手动指定 ADM1",
+      "pinned": true
+    },
+    "RWA": {
+      "level": 1,
+      "units": 5,
+      "meanAreaKm2": 5061,
+      "canonical": "Province",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "SAU": {
+      "level": 2,
+      "units": 147,
+      "meanAreaKm2": 13082,
+      "canonical": "Governorate",
+      "inBand": true,
+      "note": "保持 ADM2"
+    },
+    "SDN": {
+      "level": 2,
+      "units": 189,
+      "meanAreaKm2": 9902,
+      "canonical": "District",
+      "inBand": true,
+      "note": "保持 ADM2"
+    },
+    "SEN": {
+      "level": 1,
+      "units": 14,
+      "meanAreaKm2": 14049,
+      "canonical": "region",
+      "inBand": true,
+      "note": "切换到 ADM1"
+    },
+    "SGP": {
+      "level": 1,
+      "units": 5,
+      "meanAreaKm2": 156,
+      "canonical": "Unknown",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "SLB": {
+      "level": 1,
+      "units": 10,
+      "meanAreaKm2": 2720,
+      "canonical": "Province",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "SLE": {
+      "level": 1,
+      "units": 4,
+      "meanAreaKm2": 18153,
+      "canonical": "Province",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "SLV": {
+      "level": 1,
+      "units": 14,
+      "meanAreaKm2": 1498,
+      "canonical": "Departments",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "SOM": {
+      "level": 1,
+      "units": 18,
+      "meanAreaKm2": 35297,
+      "canonical": "Unknown",
+      "inBand": true,
+      "note": "切换到 ADM1"
+    },
+    "SRB": {
+      "level": 1,
+      "units": 25,
+      "meanAreaKm2": 3104,
+      "canonical": "district",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "SSD": {
+      "level": 2,
+      "units": 78,
+      "meanAreaKm2": 8109,
+      "canonical": "counties",
+      "inBand": true,
+      "note": "保持 ADM2"
+    },
+    "STP": {
+      "level": 1,
+      "units": 2,
+      "meanAreaKm2": 495,
+      "canonical": "Unknown",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "SUR": {
+      "level": 1,
+      "units": 10,
+      "meanAreaKm2": 14536,
+      "canonical": "Unknown",
+      "inBand": true,
+      "note": "切换到 ADM1"
+    },
+    "SVK": {
+      "level": 1,
+      "units": 8,
+      "meanAreaKm2": 6128,
+      "canonical": "Unknown",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "SVN": {
+      "level": 1,
+      "units": 2,
+      "meanAreaKm2": 10073,
+      "canonical": "Macroregions",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "SWE": {
+      "level": 1,
+      "units": 21,
+      "meanAreaKm2": 21353,
+      "canonical": "County",
+      "inBand": true,
+      "note": "切换到 ADM1"
+    },
+    "SWZ": {
+      "level": 1,
+      "units": 4,
+      "meanAreaKm2": 4341,
+      "canonical": "Unknown",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "SYC": {
+      "level": 2,
+      "units": 8,
+      "meanAreaKm2": 56,
+      "canonical": "Regions",
+      "inBand": false,
+      "note": "保持 ADM2"
+    },
+    "SYR": {
+      "level": 1,
+      "units": 14,
+      "meanAreaKm2": 13438,
+      "canonical": "Governorate",
+      "inBand": true,
+      "note": "切换到 ADM1"
+    },
+    "TCD": {
+      "level": 2,
+      "units": 70,
+      "meanAreaKm2": 18069,
+      "canonical": "Departments",
+      "inBand": true,
+      "note": "保持 ADM2"
+    },
+    "TGO": {
+      "level": 1,
+      "units": 5,
+      "meanAreaKm2": 11380,
+      "canonical": "Regions",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "THA": {
+      "level": 1,
+      "units": 77,
+      "meanAreaKm2": 6687,
+      "canonical": "Unknown",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "TJK": {
+      "level": 1,
+      "units": 5,
+      "meanAreaKm2": 28258,
+      "canonical": "Unknown",
+      "inBand": true,
+      "note": "切换到 ADM1"
+    },
+    "TKM": {
+      "level": 2,
+      "units": 66,
+      "meanAreaKm2": 7477,
+      "canonical": "Unknown",
+      "inBand": true,
+      "note": "保持 ADM2"
+    },
+    "TLS": {
+      "level": 1,
+      "units": 13,
+      "meanAreaKm2": 1145,
+      "canonical": "Municipalities",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "TON": {
+      "level": 1,
+      "units": 5,
+      "meanAreaKm2": 136,
+      "canonical": "Unknown",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "TUN": {
+      "level": 1,
+      "units": 24,
+      "meanAreaKm2": 6467,
+      "canonical": "Unknown",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "TUR": {
+      "level": 1,
+      "units": 81,
+      "meanAreaKm2": 9630,
+      "canonical": "province",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "TUV": {
+      "level": 1,
+      "units": 8,
+      "meanAreaKm2": 3,
+      "canonical": "Unknown",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "TWN": {
+      "level": 1,
+      "units": 22,
+      "meanAreaKm2": 1655,
+      "canonical": "Chinese Taipei",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "TZA": {
+      "level": 1,
+      "units": 30,
+      "meanAreaKm2": 31326,
+      "canonical": "Regions",
+      "inBand": true,
+      "note": "切换到 ADM1"
+    },
+    "UGA": {
+      "level": 2,
+      "units": 151,
+      "meanAreaKm2": 1402,
+      "canonical": "Counties",
+      "inBand": false,
+      "note": "保持 ADM2"
+    },
+    "UKR": {
+      "level": 1,
+      "units": 27,
+      "meanAreaKm2": 23706,
+      "canonical": "Unknown",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "URY": {
+      "level": 1,
+      "units": 19,
+      "meanAreaKm2": 9306,
+      "canonical": "Unknown",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "USA": {
+      "level": 1,
+      "units": 56,
+      "meanAreaKm2": 167052,
+      "canonical": "States",
+      "inBand": false,
+      "note": "手动指定 ADM1",
+      "pinned": true
+    },
+    "UZB": {
+      "level": 1,
+      "units": 14,
+      "meanAreaKm2": 31692,
+      "canonical": "Province",
+      "inBand": true,
+      "note": "切换到 ADM1"
+    },
+    "VEN": {
+      "level": 1,
+      "units": 25,
+      "meanAreaKm2": 36552,
+      "canonical": "Estados",
+      "inBand": true,
+      "note": "切换到 ADM1"
+    },
+    "VNM": {
+      "level": 1,
+      "units": 64,
+      "meanAreaKm2": 5158,
+      "canonical": "Municipalities and Provinces",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "VUT": {
+      "level": 1,
+      "units": 6,
+      "meanAreaKm2": 2034,
+      "canonical": "Unknown",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "WSM": {
+      "level": 1,
+      "units": 11,
+      "meanAreaKm2": 258,
+      "canonical": "Unknown",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "XKX": {
+      "level": 1,
+      "units": 7,
+      "meanAreaKm2": 1556,
+      "canonical": "District",
+      "inBand": false,
+      "note": "切换到 ADM1"
+    },
+    "YEM": {
+      "level": 1,
+      "units": 22,
+      "meanAreaKm2": 20585,
+      "canonical": "Unknown",
+      "inBand": true,
+      "note": "切换到 ADM1"
+    },
+    "ZAF": {
+      "level": 2,
+      "units": 52,
+      "meanAreaKm2": 23477,
+      "canonical": "District municipality",
+      "inBand": true,
+      "note": "保持 ADM2"
+    },
+    "ZMB": {
+      "level": 2,
+      "units": 116,
+      "meanAreaKm2": 6475,
+      "canonical": "Districts",
+      "inBand": true,
+      "note": "保持 ADM2"
+    },
+    "ZWE": {
+      "level": 1,
+      "units": 10,
+      "meanAreaKm2": 39077,
+      "canonical": "Province",
+      "inBand": true,
+      "note": "切换到 ADM1"
+    }
+  }
+}

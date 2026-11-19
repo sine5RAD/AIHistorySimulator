@@ -1,6 +1,4 @@
 <script setup lang="ts">
-import { RouterLink } from 'vue-router'
-
 defineOptions({
   name: 'IndexTutorialPage',
 })
@@ -29,6 +27,9 @@ defineOptions({
         </li>
         <li>
           <strong>事件驱动（/pages/event-drive）</strong>：基于世界上下文进行事件推演与对话归档。
+        </li>
+        <li>
+          <strong>世界地图（/pages/world-map）</strong>：查看 2D 世界地图，点选国家查看情报面板。
         </li>
       </ol>
     </section>
@@ -90,6 +91,24 @@ defineOptions({
           <li>确认当前世界包已加载。你可以向模型发送“你好”以确认</li>
           <li>按照右侧的提示卡片干你想干的事情</li>
           <li>存档：导出聊天记录的json文件</li>
+        </ul>
+      </article>
+
+      <article class="route-card">
+        <h3>6. 世界地图 /pages/world-map</h3>
+        <p>用途：在地图上直观查看国家分布，作为后续事件推演的空间入口</p>
+        <p>怎么用：</p>
+        <ul>
+          <li>拖拽平移地图，滚轮朝光标位置缩放，格网会随缩放变密</li>
+          <li>悬停国家会高亮，点击国家会闪烁并弹出情报面板</li>
+          <li>
+            放大地图后会自动加载下级行政区（各国已按面积统一到相近的细分粒度），同样可悬停与点击
+          </li>
+          <li>
+            地图数据放在 <code>public/geo/</code>，首次使用执行
+            <code>pnpm map:data</code> 生成国界与中国区县；<code>pnpm map:plan</code> 与
+            <code>pnpm map:granularity</code> 用来统一各国的细分粒度
+          </li>
         </ul>
       </article>
     </section>

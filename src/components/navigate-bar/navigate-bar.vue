@@ -41,9 +41,12 @@ onBeforeUnmount(() => {
 <template>
   <div id="nav-menu">
     <div id="nav-menu-left">
-      <rouer-link to="/pages/index">
+      <router-link to="/pages/index">
         <img src="/public/logo.png" alt="Logo" class="logo" />
-      </rouer-link>
+      </router-link>
+      <router-link to="/pages/world-map">
+        <span class="nav-item">世界地图</span>
+      </router-link>
       <router-link to="/pages/text-to-json">
         <span class="nav-item"> 文章->json </span>
       </router-link>
@@ -52,6 +55,9 @@ onBeforeUnmount(() => {
       </router-link>
       <router-link to="/pages/event-drive">
         <span class="nav-item">事件驱动</span>
+      </router-link>
+      <router-link to="/pages/world-map">
+        <span class="nav-item">世界地图</span>
       </router-link>
       <router-link to="/pages/setting">
         <span class="nav-item">设置</span>

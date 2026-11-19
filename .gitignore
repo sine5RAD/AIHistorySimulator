@@ -24,3 +24,10 @@ pnpm-debug.log*
 
 package-lock.json
 yarn.lock
+
+# 地图数据由 scripts/build-map-data.mjs 生成，体积较大，默认不入库
+/public/geo/*.geojson
+/public/geo/admin2/
+
+# 粒度规划时抓取的 geoBoundaries 元数据缓存
+/scripts/.cache/
