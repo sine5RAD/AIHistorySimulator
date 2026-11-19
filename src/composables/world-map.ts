@@ -39,10 +39,9 @@ const MAX_ZOOM = 20
 const ZOOM_STEP = 1.12
 /** 放大到该倍数才开始绘制市级行政区（1 = 全球刚好铺满宽度） */
 const CITY_ZOOM = 2.4
-/** 单个视口最多同时请求几个国家的下级行政区 */
-const MAX_VISIBLE_ADM2 = 6
-/** 内存里最多保留几个国家的下级行政区 */
-const MAX_LOADED_ADM2 = 8
+/** 视口里最多同时请求几个国家的下级行政区：不设上限，同屏国家全部加载 */
+/** 内存里保留的分块上限，够覆盖一整屏国家即可 */
+const MAX_LOADED_ADM2 = 96
 
 /** 按下与抬起的位移小于该值才算“点击”，否则算拖动 */
 const CLICK_TOLERANCE_PX = 6
@@ -689,14 +688,32 @@ export function useWorldMap(options: WorldMapOptions = {}) {
       return
     }
 
-    const view = expandBounds(viewBounds(camera()), 4)
+    const views = LONGITUDE_SHIFTS.map((shift) => expandBounds(viewBounds(camera(), shift), 4))
     const center = screenToWorld(camera(), width / 2, height / 2)
     const visible = new Set<string>()
     const candidates: { iso: string; area: number; containsCenter: number }[] = []
 
     for (const feature of countryFeatures) {
       const iso = feature.iso
-      if (!iso || !boundsIntersect(feature.bounds, view)) {
+      if (!iso) {
+        continue
+      }
+      // 跨 180° 经线的国家（美国、俄罗斯等）包围盒会被展开到 182°~294°，
+      // 只按 shift 0 判断会永远“不可见”，所以三个经度副本都要参与
+      let area = 0
+      for (const view of views) {
+        if (!boundsIntersect(feature.bounds, view)) {
+          continue
+        }
+        const overlapLng =
+          Math.min(feature.bounds.maxLng, view.maxLng) -
+          Math.max(feature.bounds.minLng, view.minLng)
+        const overlapLat =
+          Math.min(feature.bounds.maxLat, view.maxLat) -
+          Math.max(feature.bounds.minLat, view.minLat)
+        area = Math.max(area, Math.max(0, overlapLng) * Math.max(0, overlapLat))
+      }
+      if (area <= 0) {
         continue
       }
       // 所有可见国家都保留在内存里；但只有本地有分块的国家才自动加载
@@ -704,12 +721,6 @@ export function useWorldMap(options: WorldMapOptions = {}) {
       if (!adm2Store.hasLocal(iso)) {
         continue
       }
-      // 按「在视口内实际占多少面积」排序，而不是按国土总面积：
-      // 否则俄罗斯这种超大国家会一直挤掉屏幕中央的小国
-      const { minLng, maxLng, minLat, maxLat } = feature.bounds
-      const overlapLng = Math.min(maxLng, view.maxLng) - Math.max(minLng, view.minLng)
-      const overlapLat = Math.min(maxLat, view.maxLat) - Math.max(minLat, view.minLat)
-      const area = Math.max(0, overlapLng) * Math.max(0, overlapLat)
       const containsCenter = pointInFeature(center.lng, center.lat, feature) ? 1 : 0
       candidates.push({ iso, area, containsCenter })
     }
@@ -720,9 +731,9 @@ export function useWorldMap(options: WorldMapOptions = {}) {
       .join(',')
     if (key !== lastEnsureKey) {
       lastEnsureKey = key
-      // 鼠标/视口正盯着的国家最优先，其次才按可见面积
+      // 鼠标/视口正盯着的国家最优先，其余按可见面积依次加载
       candidates.sort((a, b) => b.containsCenter - a.containsCenter || b.area - a.area)
-      for (const candidate of candidates.slice(0, MAX_VISIBLE_ADM2)) {
+      for (const candidate of candidates) {
         adm2Store.ensure(candidate.iso)
       }
     }
@@ -762,9 +773,11 @@ export function useWorldMap(options: WorldMapOptions = {}) {
 
     const chunks = zoom >= CITY_ZOOM && adm2Store ? adm2Store.list() : []
 
+    // 先在三个经度副本里找下级行政区，再找国家。
+    // 否则跨 180° 的国家（美国、俄罗斯）会在 shift=-360 时先命中整块国家，
+    // 导致屏幕上的州/都市区永远选不中。
     for (const shift of LONGITUDE_SHIFTS) {
       const { lng, lat } = screenToWorld(current, x, y, shift)
-
       for (const chunk of chunks) {
         if (!pointInBounds(lng, lat, chunk.bounds)) {
           continue
@@ -775,7 +788,10 @@ export function useWorldMap(options: WorldMapOptions = {}) {
           }
         }
       }
+    }
 
+    for (const shift of LONGITUDE_SHIFTS) {
+      const { lng, lat } = screenToWorld(current, x, y, shift)
       for (const feature of countryFeatures) {
         if (pointInFeature(lng, lat, feature)) {
           return { feature, kind: 'country', lng, lat, shift }

@@ -4,7 +4,7 @@
   "windowLow": 5,
   "windowHigh": 4.2,
   "smallAreaKm2": 100000,
-  "generatedAt": "2026-11-19T13:06:16.135Z",
+  "generatedAt": "2026-11-19T14:50:39.546Z",
   "source": "geoBoundaries gbOpen + 阿里云 DataV，按平均单元面积统一粒度",
   "countries": {
     "AFG": {
@@ -16,12 +16,12 @@
       "note": "切换到 ADM1"
     },
     "AGO": {
-      "level": 2,
-      "units": 158,
-      "meanAreaKm2": 7898,
-      "canonical": "Municipality",
+      "level": 1,
+      "units": 18,
+      "meanAreaKm2": 69301,
+      "canonical": "Province",
       "inBand": true,
-      "note": "保持 ADM2"
+      "note": "切换到 ADM1"
     },
     "ALB": {
       "level": 1,
@@ -32,12 +32,12 @@
       "note": "切换到 ADM1"
     },
     "ARG": {
-      "level": 2,
-      "units": 526,
-      "meanAreaKm2": 5290,
-      "canonical": "departments",
-      "inBand": true,
-      "note": "保持 ADM2"
+      "level": 1,
+      "units": 23,
+      "meanAreaKm2": 120719,
+      "canonical": "Province",
+      "inBand": false,
+      "note": "切换到 ADM1"
     },
     "ARM": {
       "level": 1,
@@ -153,20 +153,20 @@
       "note": "切换到 ADM1"
     },
     "BOL": {
-      "level": 2,
-      "units": 110,
-      "meanAreaKm2": 9716,
+      "level": 1,
+      "units": 9,
+      "meanAreaKm2": 118754,
       "canonical": "Unknown",
-      "inBand": true,
-      "note": "保持 ADM2"
+      "inBand": false,
+      "note": "切换到 ADM1"
     },
     "BRA": {
-      "level": 2,
-      "units": 5570,
-      "meanAreaKm2": 1526,
-      "canonical": "municipality",
+      "level": 1,
+      "units": 27,
+      "meanAreaKm2": 315695,
+      "canonical": "State",
       "inBand": false,
-      "note": "保持 ADM2"
+      "note": "切换到 ADM1"
     },
     "BRN": {
       "level": 1,
@@ -250,12 +250,12 @@
       "note": "切换到 ADM1"
     },
     "COD": {
-      "level": 2,
-      "units": 189,
-      "meanAreaKm2": 12330,
-      "canonical": "territory, city",
+      "level": 1,
+      "units": 26,
+      "meanAreaKm2": 88800,
+      "canonical": "Provinces",
       "inBand": true,
-      "note": "保持 ADM2"
+      "note": "切换到 ADM1"
     },
     "COG": {
       "level": 1,
@@ -803,12 +803,12 @@
       "note": "城市级特别行政区，保持区级划分"
     },
     "MAR": {
-      "level": 2,
-      "units": 75,
-      "meanAreaKm2": 9104,
-      "canonical": "Unknown",
+      "level": 1,
+      "units": 12,
+      "meanAreaKm2": 56896,
+      "canonical": "Region",
       "inBand": true,
-      "note": "保持 ADM2"
+      "note": "切换到 ADM1"
     },
     "MCO": {
       "level": 2,
@@ -816,7 +816,8 @@
       "meanAreaKm2": 0,
       "canonical": "Unknown",
       "inBand": false,
-      "note": "保持 ADM2"
+      "note": "手动指定 ADM2",
+      "pinned": true
     },
     "MDG": {
       "level": 1,
@@ -988,12 +989,12 @@
       "note": "切换到 ADM1"
     },
     "PAK": {
-      "level": 2,
-      "units": 126,
-      "meanAreaKm2": 6953,
-      "canonical": "Districts",
-      "inBand": true,
-      "note": "保持 ADM2"
+      "level": 1,
+      "units": 7,
+      "meanAreaKm2": 125151,
+      "canonical": "Province",
+      "inBand": false,
+      "note": "切换到 ADM1"
     },
     "PAN": {
       "level": 1,
@@ -1125,12 +1126,12 @@
       "note": "保持 ADM2"
     },
     "SDN": {
-      "level": 2,
-      "units": 189,
-      "meanAreaKm2": 9902,
-      "canonical": "District",
+      "level": 1,
+      "units": 19,
+      "meanAreaKm2": 98501,
+      "canonical": "Wilayat/State",
       "inBand": true,
-      "note": "保持 ADM2"
+      "note": "切换到 ADM1"
     },
     "SEN": {
       "level": 1,
@@ -1189,12 +1190,12 @@
       "note": "切换到 ADM1"
     },
     "SSD": {
-      "level": 2,
-      "units": 78,
-      "meanAreaKm2": 8109,
-      "canonical": "counties",
+      "level": 1,
+      "units": 10,
+      "meanAreaKm2": 63249,
+      "canonical": "states",
       "inBand": true,
-      "note": "保持 ADM2"
+      "note": "切换到 ADM1"
     },
     "STP": {
       "level": 1,
@@ -1293,12 +1294,12 @@
       "note": "切换到 ADM1"
     },
     "TKM": {
-      "level": 2,
-      "units": 66,
-      "meanAreaKm2": 7477,
-      "canonical": "Unknown",
+      "level": 1,
+      "units": 6,
+      "meanAreaKm2": 81953,
+      "canonical": "Regions (Welayat)",
       "inBand": true,
-      "note": "保持 ADM2"
+      "note": "切换到 ADM1"
     },
     "TLS": {
       "level": 1,
@@ -1357,12 +1358,12 @@
       "note": "切换到 ADM1"
     },
     "UGA": {
-      "level": 2,
-      "units": 151,
-      "meanAreaKm2": 1402,
-      "canonical": "Counties",
-      "inBand": false,
-      "note": "保持 ADM2"
+      "level": 1,
+      "units": 4,
+      "meanAreaKm2": 52251,
+      "canonical": "Unknown",
+      "inBand": true,
+      "note": "切换到 ADM1"
     },
     "UKR": {
       "level": 1,
@@ -1386,8 +1387,7 @@
       "meanAreaKm2": 167052,
       "canonical": "States",
       "inBand": false,
-      "note": "手动指定 ADM1",
-      "pinned": true
+      "note": "切换到 ADM1"
     },
     "UZB": {
       "level": 1,
@@ -1454,12 +1454,12 @@
       "note": "保持 ADM2"
     },
     "ZMB": {
-      "level": 2,
-      "units": 116,
-      "meanAreaKm2": 6475,
-      "canonical": "Districts",
+      "level": 1,
+      "units": 10,
+      "meanAreaKm2": 75108,
+      "canonical": "Province",
       "inBand": true,
-      "note": "保持 ADM2"
+      "note": "切换到 ADM1"
     },
     "ZWE": {
       "level": 1,

@@ -15,6 +15,7 @@
     "map:plan": "node scripts/plan-granularity.mjs",
     "map:granularity": "node scripts/build-map-data.mjs --granularity",
     "map:audit": "node scripts/audit-map-data.mjs",
+    "map:us-msa": "node scripts/build-map-data.mjs --us-msa",
     "map:inspect": "node scripts/inspect-world-map.mjs",
     "type-check": "vue-tsc --build",
     "lint": "run-s lint:*",

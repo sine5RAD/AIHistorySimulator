@@ -107,13 +107,15 @@ async function main() {
     const countryArea = worldAreas.get(iso) ?? 0
     const coverage = countryArea > 0 ? area / countryArea : 0
     const deviation = Math.abs(Math.log(mean / target))
+    // 自定义数据源（例如美国 CBSA）本来就只覆盖部分国土，不做覆盖率校验
+    const partial = payload.partialCoverage === true
 
     rows.push({ iso, level: indexEntry.level, units: features.length, mean, coverage, deviation })
 
-    if (coverage < 0.85 && countryArea > 20_000) {
+    if (!partial && coverage < 0.85 && countryArea > 20_000) {
       warnings.push(`${iso}：只覆盖 ${(coverage * 100).toFixed(0)}% 国土（可能是湖泊或海外岛屿）`)
     }
-    if (coverage > 1.35 && countryArea > 20_000) {
+    if (!partial && coverage > 1.35 && countryArea > 20_000) {
       warnings.push(
         `${iso}：面积是国土的 ${(coverage * 100).toFixed(0)}%（可能含海域或争议区重叠）`,
       )

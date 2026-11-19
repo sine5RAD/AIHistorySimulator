@@ -47,6 +47,10 @@ const DATAV_BOUND = 'https://geo.datav.aliyun.com/areas_v3/bound'
 
 /** geoBoundaries 元数据接口与下载镜像（原始地址太慢时套一层反代） */
 const GEOBOUNDARIES_API = 'https://www.geoboundaries.org/api/current/gbOpen'
+/** 美国：Census CBSA（Metropolitan Statistical Area），由 Esri 托管为 ArcGIS Feature Service */
+const US_MSA_QUERY =
+  'https://services.arcgis.com/P3ePLMYs2RVChkJx/arcgis/rest/services/usa_cbsa/FeatureServer/0/query' +
+  "?where=CBSA_TYPE%3D'Metropolitan'&outFields=CBSA_ID,NAME,POPULATION,SQMI&outSR=4326&f=geojson&maxAllowableOffset=0.01"
 const GEOBOUNDARIES_PROXIES = [
   (url) => url,
   (url) => `https://ghfast.top/${url}`,
@@ -86,6 +90,7 @@ function parseArgs(argv) {
     force: false,
     indexOnly: false,
     granularity: false,
+    usMsa: false,
     tolerance: DEFAULT_TOLERANCE,
     concurrency: 3,
     maxTotalMb: 200,
@@ -98,6 +103,7 @@ function parseArgs(argv) {
     else if (arg === '--force') options.force = true
     else if (arg === '--index-only') options.indexOnly = true
     else if (arg === '--granularity') options.granularity = true
+    else if (arg === '--us-msa') options.usMsa = true
     else if (arg.startsWith('--china-level='))
       options.chinaLevel = arg.slice('--china-level='.length)
     else if (arg.startsWith('--only=')) options.only = arg.slice('--only='.length)
@@ -129,7 +135,8 @@ function parseArgs(argv) {
     !options.adm2 &&
     !options.all &&
     !options.indexOnly &&
-    !options.granularity
+    !options.granularity &&
+    !options.usMsa
   ) {
     options.world = true
     options.china = true
@@ -780,6 +787,7 @@ const CANONICAL_OVERRIDES = {
   TWN: '县市',
   HKG: '区',
   MAC: '堂区',
+  USA: '州',
 }
 
 async function buildOneAdm2(iso, options, level = 2) {
@@ -966,6 +974,75 @@ async function buildAdm2List(options, isos) {
     }
   }
   return { skipped: false, successes, failures, totalBytes }
+}
+
+/* ------------------------------------------------------------------ */
+/* 美国：大都市统计区（CBSA）                                          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 美国用 Census 的 Metropolitan Statistical Area（约 400 个），数量与中国地级市接近。
+ * 注意：MSA 只覆盖都市县，乡村地区没有下级行政区，属于“部分覆盖”数据源。
+ */
+async function buildUsMsa(options) {
+  process.stdout.write('> 下载美国 CBSA（Metropolitan Statistical Area）… ')
+  const result = await fetchJson(US_MSA_QUERY)
+  if (!result.json || !Array.isArray(result.json.features)) {
+    console.log('失败')
+    throw new Error(`无法获取美国 CBSA 数据：${result.error ?? '响应格式异常'}`)
+  }
+  const payload = result.json
+  console.log(`成功（${payload.features.length} 个都市区）`)
+
+  const features = []
+  let vertices = 0
+  let areaKm2 = 0
+
+  for (const raw of payload.features) {
+    const polygons = simplifyGeometry(raw?.geometry, options.tolerance)
+    if (!polygons) continue
+    const properties = raw?.properties ?? {}
+    const id = String(properties.CBSA_ID ?? '')
+    const name = String(properties.NAME ?? id)
+    const population = Number(properties.POPULATION)
+    const sqmi = Number(properties.SQMI)
+    vertices += countVertices(polygons)
+    areaKm2 += polygonsAreaKm2(polygons)
+    features.push(
+      makeFeature(
+        id,
+        {
+          name,
+          code: id,
+          parent: '美国',
+          level: 'adm2',
+          source: 'census-cbsa',
+          population: Number.isFinite(population) ? population : null,
+          area_sqmi: Number.isFinite(sqmi) ? sqmi : null,
+        },
+        polygons,
+      ),
+    )
+  }
+
+  const bytes = await writeCollection(
+    join(ADM2_DIR, 'USA.geojson'),
+    collection(features, {
+      country: 'USA',
+      level: 'adm2',
+      source: 'Census CBSA · Metropolitan Statistical Areas（ArcGIS Feature Service）',
+      canonical: '大都市统计区',
+      partialCoverage: true,
+      coverageNote: '只覆盖都市县，乡村地区没有下级行政区',
+      simplifiedTolerance: options.tolerance,
+    }),
+  )
+
+  console.log(
+    `  写入 USA.geojson：${features.length} 个大都市区，${vertices} 个顶点，` +
+      `${(bytes / 1024 / 1024).toFixed(2)} MB，覆盖面积 ${Math.round(areaKm2).toLocaleString()} km²`,
+  )
+  return { units: features.length, bytes }
 }
 
 /* ------------------------------------------------------------------ */
@@ -1368,6 +1445,9 @@ async function main() {
   }
   if (options.granularity) {
     await buildGranularity(options)
+  }
+  if (options.usMsa) {
+    await buildUsMsa(options)
   }
 
   await writeIndex()

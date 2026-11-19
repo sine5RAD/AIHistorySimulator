@@ -51,6 +51,7 @@ function parseArgs(argv) {
     windowLow: DEFAULT_WINDOW_LOW,
     windowHigh: DEFAULT_WINDOW_HIGH,
     smallAreaKm2: DEFAULT_SMALL_AREA,
+    maxDensityRatio: 2,
     concurrency: 5,
   }
   for (const arg of argv) {
@@ -59,6 +60,7 @@ function parseArgs(argv) {
     else if (arg.startsWith('--window-low=')) options.windowLow = Number(arg.slice(13))
     else if (arg.startsWith('--window-high=')) options.windowHigh = Number(arg.slice(14))
     else if (arg.startsWith('--small-area=')) options.smallAreaKm2 = Number(arg.slice(13))
+    else if (arg.startsWith('--max-density=')) options.maxDensityRatio = Number(arg.slice(14))
     else if (arg.startsWith('--concurrency=')) options.concurrency = Number(arg.slice(14))
   }
   if (!Number.isFinite(options.target) || options.target <= 0) options.target = DEFAULT_TARGET
@@ -71,6 +73,9 @@ function parseArgs(argv) {
   }
   if (!Number.isFinite(options.smallAreaKm2) || options.smallAreaKm2 <= 0) {
     options.smallAreaKm2 = DEFAULT_SMALL_AREA
+  }
+  if (!Number.isFinite(options.maxDensityRatio) || options.maxDensityRatio <= 1) {
+    options.maxDensityRatio = 2
   }
   options.concurrency = clamp(Math.trunc(options.concurrency) || 5, 1, 8)
   return options
@@ -126,6 +131,8 @@ async function readLocalStats() {
       meanAreaKm2: Math.round(area / units),
       canonical: payload.canonical ?? null,
       source: payload.source ?? 'unknown',
+      level: payload.level ?? 'adm2',
+      partialCoverage: payload.partialCoverage === true,
     })
   }
   return stats
@@ -207,11 +214,6 @@ function pickLevel(iso, local, meta, options) {
     return { level: null, reason: '没有可用的行政区数据' }
   }
 
-  const low = options.target / options.windowLow
-  const high = options.target * options.windowHigh
-  const inWindow = candidates.filter(
-    (candidate) => candidate.meanAreaKm2 >= low && candidate.meanAreaKm2 <= high,
-  )
   const current = candidates.find((candidate) => candidate.level === 2) ?? null
 
   // 微型国家/地区：整个国家还没目标单元大时，再细分就是碎屑（牙买加 827 个社区、
@@ -243,37 +245,21 @@ function pickLevel(iso, local, meta, options) {
     }
   }
 
-  if (inWindow.length === 0) {
-    return {
-      choice: current ?? candidates.sort((a, b) => a.deviation - b.deviation)[0],
-      inBand: false,
-    }
-  }
-
-  // 只有 1~4 个单元的层级（比如斯洛文尼亚的 2 个统计大区）几乎没有细分意义，
-  // 除非这个国家本身就不比目标单元大多少
-  const minUnits = (local?.areaKm2 ?? 0) <= options.target * 2 ? 1 : 5
-  const withEnoughUnits = inWindow.filter((candidate) => candidate.units >= minUnits)
-  const pool = withEnoughUnits.length > 0 ? withEnoughUnits : inWindow
+  // 密度上限：任何国家都不允许出现比基准密 N 倍以上的层级。
+  // 例如巴西只有 27 个州（315,695 km²）和 5,570 个市镇（1,526 km²）两档，
+  // 后者比基准密 17 倍，直接排除，最终落到 27 个州。
+  const maxDensity = options.target / options.maxDensityRatio
+  const allowed = candidates.filter((candidate) => candidate.meanAreaKm2 >= maxDensity)
+  const pool = allowed.length > 0 ? allowed : candidates
   pool.sort((a, b) => a.deviation - b.deviation || a.level - b.level)
   const best = pool[0]
 
-  // 池子里只有单元数过少的层级时，宁可保持现状
-  if (best.units < minUnits && current) {
-    return { choice: current, inBand: false }
+  // 当前层级本来就接近最优时保持不动，避免来回重建
+  if (current && pool.includes(current) && current.deviation <= best.deviation * 1.15) {
+    return { choice: current, inBand: current.deviation <= Math.log(options.windowHigh) }
   }
 
-  // 当前层级已经够接近最优 → 不动
-  if (current && pool.includes(current) && current.deviation <= best.deviation * 1.25) {
-    return { choice: current, inBand: true }
-  }
-
-  // 换级必须带来明显改善（对数偏差至少减少 0.35，约 1.4 倍）
-  if (current && best.deviation > current.deviation - 0.35) {
-    return { choice: current, inBand: pool.includes(current) }
-  }
-
-  return { choice: best, inBand: true }
+  return { choice: best, inBand: best.deviation <= Math.log(options.windowHigh) }
 }
 
 /* ------------------------------------------------------------------ */
@@ -312,6 +298,20 @@ async function main() {
       cursor += 1
       const iso = isos[index]
       const local = stats.get(iso)
+
+      // 自定义数据源（例如美国 CBSA）：层级由数据源决定，不参与自动规划
+      if (local?.partialCoverage) {
+        result.countries[iso] = {
+          level: Number(String(local.level).replace('adm', '')) || 2,
+          units: local.units,
+          meanAreaKm2: local.meanAreaKm2,
+          canonical: local.canonical,
+          source: local.source,
+          note: '自定义数据源，保持现状',
+          custom: true,
+        }
+        continue
+      }
 
       // 中国来自 DataV，单独处理：县级（区县）平均约 3,400 km²，最接近目标
       if (iso === 'CHN') {

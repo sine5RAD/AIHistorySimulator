@@ -64,7 +64,8 @@ const GEOBOUNDARIES_PROXIES: ((url: string) => string)[] = [
 
 const META_TIMEOUT = 15_000
 const REMOTE_TIMEOUT = 30_000
-const MAX_CONCURRENT = 2
+/** 并发下载数：分块都很小，4 路足够把一屏国家快速拉齐 */
+const MAX_CONCURRENT = 4
 
 function withTimeout(timeout: number): AbortSignal {
   return AbortSignal.timeout(timeout)
@@ -349,11 +350,7 @@ function makeChunk(
     }
     // geoBoundaries 的哈希 id 对用户没意义，补一个「国家-层级」的展示代码；
     // 中国地级市的 adcode 是纯数字，保留原样。
-    if (
-      feature.level !== 'country' &&
-      feature.code === feature.id &&
-      !/^\d+$/.test(feature.id)
-    ) {
+    if (feature.level !== 'country' && feature.code === feature.id && !/^\d+$/.test(feature.id)) {
       feature.code = `${iso}-${feature.level.toUpperCase()}`
     }
     const { bounds } = feature
