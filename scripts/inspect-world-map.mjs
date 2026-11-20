@@ -23,10 +23,11 @@ function toPage(lng, lat) {
 
 /** 用页面里读到的相机状态换算页面坐标 */
 function pagePoint(lng, lat, camera) {
-  const unit = camera.scale * camera.zoom
+  const unitX = camera.scaleX * camera.zoom
+  const unitY = camera.scaleY * camera.zoom
   return {
-    x: camera.cx + (lng + camera.offsetX) * unit,
-    y: NAV_HEIGHT + camera.cy - (lat + camera.offsetY) * unit,
+    x: camera.cx + (lng + camera.offsetX) * unitX,
+    y: NAV_HEIGHT + camera.cy - (lat + camera.offsetY) * unitY,
   }
 }
 

@@ -59,9 +59,10 @@ console.log(
 
 // 点一个县级单元，确认面板显示层级名
 const camera = await page.evaluate(() => window.__worldMapCamera?.() ?? null)
-const unit = camera.scale * camera.zoom
-const clickX = camera.cx + (113.26 + camera.offsetX) * unit
-const clickY = 64 + camera.cy - (23.13 + camera.offsetY) * unit
+const unitX = camera.scaleX * camera.zoom
+const unitY = camera.scaleY * camera.zoom
+const clickX = camera.cx + (113.26 + camera.offsetX) * unitX
+const clickY = 64 + camera.cy - (23.13 + camera.offsetY) * unitY
 await page.mouse.move(clickX, clickY)
 await page.waitForTimeout(300)
 await page.mouse.down()

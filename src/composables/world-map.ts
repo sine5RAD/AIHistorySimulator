@@ -7,6 +7,7 @@ import { boundsIntersect, expandBounds, pointInFeature } from '@/lib/map/geometr
 import { FeaturePathCache } from '@/lib/map/paths'
 import {
   deviceTransform,
+  fitScale,
   lineWidthFor,
   screenToWorld,
   viewBounds,
@@ -103,6 +104,8 @@ interface CameraSnapshot {
   width: number
   height: number
   dpr: number
+  scaleX: number
+  scaleY: number
   zoom: number
   offsetX: number
   offsetY: number
@@ -171,7 +174,8 @@ export function useWorldMap(options: WorldMapOptions = {}) {
   let dpr = 1
   let width = 0
   let height = 0
-  let scale = 0
+  let scaleX = 0
+  let scaleY = 0
   let cx = 0
   let cy = 0
 
@@ -206,26 +210,30 @@ export function useWorldMap(options: WorldMapOptions = {}) {
     width = nextWidth
     height = nextHeight
     dpr = nextDpr
-    scale = width / 360
+    // 横向铺满窗口宽度，纵向保证整幅世界地图都放得下；
+    // 窗口比 2:1 更扁时纵向比例更小，地图因此被横向拉伸而不是裁掉南北极。
+    const fitted = fitScale(width, height)
+    scaleX = fitted.scaleX
+    scaleY = fitted.scaleY
     cx = width / 2
     cy = height / 2
     return changed
   }
 
   function camera(): Camera {
-    return { width, height, cx, cy, scale, zoom, offsetX, offsetY }
+    return { width, height, cx, cy, scaleX, scaleY, zoom, offsetX, offsetY }
   }
 
   /** 限制南北方向，避免拖出地球 */
   function clampOffsetY(): void {
-    if (scale <= 0) {
+    if (scaleX <= 0 || scaleY <= 0) {
       return
     }
-    const halfRange = height / 2 / (scale * zoom)
+    const halfRange = height / 2 / (scaleY * zoom)
     const minOffset = halfRange - 90
     const maxOffset = 90 - halfRange
     if (minOffset > maxOffset) {
-      // 视口比整张地图还高（极窄窗口），直接居中
+      // 整幅地图比视口还矮，没有可拖动的余量，直接居中
       offsetY = 0
       return
     }
@@ -252,7 +260,7 @@ export function useWorldMap(options: WorldMapOptions = {}) {
 
   function applyCameraTransform(ctx: CanvasRenderingContext2D, shift: number): void {
     const transform = deviceTransform(camera(), dpr, shift)
-    ctx.setTransform(transform.a, 0, 0, transform.a, transform.e, transform.f)
+    ctx.setTransform(transform.a, 0, 0, transform.d, transform.e, transform.f)
   }
 
   /** 视口包围盒（含余量），用于剔除看不见的要素 */
@@ -314,6 +322,8 @@ export function useWorldMap(options: WorldMapOptions = {}) {
   /** 经纬度网格：缩放越大，网格越密 */
   function drawGrid(ctx: CanvasRenderingContext2D): void {
     const step = zoom <= 1 ? 30 : zoom < 3 ? 15 : zoom < 6 ? 10 : 5
+    const unitX = scaleX * zoom
+    const unitY = scaleY * zoom
 
     ctx.save()
     ctx.shadowBlur = 0
@@ -329,7 +339,7 @@ export function useWorldMap(options: WorldMapOptions = {}) {
       if (lat < -90 || lat > 90) {
         continue
       }
-      const y = cy - (lat + offsetY) * scale * zoom
+      const y = cy - (lat + offsetY) * unitY
       if (y < 0 || y > height) {
         continue
       }
@@ -357,7 +367,7 @@ export function useWorldMap(options: WorldMapOptions = {}) {
         if (lng < -180 || lng > 180) {
           continue
         }
-        const x = cx + (lng + offsetX + shift) * scale * zoom
+        const x = cx + (lng + offsetX + shift) * unitX
         if (x < 0 || x > width) {
           continue
         }
@@ -457,7 +467,7 @@ export function useWorldMap(options: WorldMapOptions = {}) {
       })
     }
 
-    cacheCamera = { width, height, dpr, zoom, offsetX, offsetY }
+    cacheCamera = { width, height, dpr, scaleX, scaleY, zoom, offsetX, offsetY }
     cacheDirty = false
     // 视角变化后看看当前视口里有哪些国家需要市级数据
     scheduleAdmin2(180)
@@ -632,10 +642,14 @@ export function useWorldMap(options: WorldMapOptions = {}) {
     if (cacheCanvas && cacheCamera) {
       let shiftX = 0
       let shiftY = 0
-      if (cacheCamera.zoom === zoom) {
-        const unit = scale * zoom * dpr
-        shiftX = (offsetX - cacheCamera.offsetX) * unit
-        shiftY = -(offsetY - cacheCamera.offsetY) * unit
+      // 尺寸（进而缩放比例）变化时缓存图已经失效，按旧图贴图只会错位，直接等重建
+      if (
+        cacheCamera.zoom === zoom &&
+        cacheCamera.scaleX === scaleX &&
+        cacheCamera.scaleY === scaleY
+      ) {
+        shiftX = (offsetX - cacheCamera.offsetX) * scaleX * zoom * dpr
+        shiftY = -(offsetY - cacheCamera.offsetY) * scaleY * zoom * dpr
       }
       ctx.drawImage(cacheCanvas, Math.round(shiftX), Math.round(shiftY))
     }
@@ -950,10 +964,11 @@ export function useWorldMap(options: WorldMapOptions = {}) {
 
   function onPointerMove(event: PointerEvent): void {
     if (isDragging) {
-      const denominator = scale * zoom
-      if (denominator > 0) {
-        offsetX = dragStartOffsetX + (event.clientX - dragStartX) / denominator
-        offsetY = dragStartOffsetY - (event.clientY - dragStartY) / denominator
+      const unitX = scaleX * zoom
+      const unitY = scaleY * zoom
+      if (unitX > 0 && unitY > 0) {
+        offsetX = dragStartOffsetX + (event.clientX - dragStartX) / unitX
+        offsetY = dragStartOffsetY - (event.clientY - dragStartY) / unitY
         clampOffsetY()
       }
       return
