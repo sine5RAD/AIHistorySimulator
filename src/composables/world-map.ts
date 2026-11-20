@@ -180,6 +180,8 @@ export function useWorldMap(options: WorldMapOptions = {}) {
   let cy = 0
 
   let cacheCanvas: HTMLCanvasElement | null = null
+  /** 平移缓存用的交换画布，避免把画布画到自身 */
+  let cacheSwapCanvas: HTMLCanvasElement | null = null
   let cacheCamera: CameraSnapshot | null = null
   let cacheDirty = true
   let ensureTimer: number | null = null
@@ -319,9 +321,14 @@ export function useWorldMap(options: WorldMapOptions = {}) {
     ctx.restore()
   }
 
+  /** 网格密度：缩放越大，网格越密 */
+  function gridStep(): number {
+    return zoom <= 1 ? 30 : zoom < 3 ? 15 : zoom < 6 ? 10 : 5
+  }
+
   /** 经纬度网格：缩放越大，网格越密 */
   function drawGrid(ctx: CanvasRenderingContext2D): void {
-    const step = zoom <= 1 ? 30 : zoom < 3 ? 15 : zoom < 6 ? 10 : 5
+    const step = gridStep()
     const unitX = scaleX * zoom
     const unitY = scaleY * zoom
 
@@ -347,12 +354,6 @@ export function useWorldMap(options: WorldMapOptions = {}) {
       ctx.moveTo(0, y)
       ctx.lineTo(width, y)
       ctx.stroke()
-
-      ctx.fillStyle = COLOR_GRID_LABEL
-      ctx.font = '12px sans-serif'
-      ctx.textAlign = 'left'
-      const label = lat === 0 ? '0°' : lat > 0 ? `${lat}°N` : `${-lat}°S`
-      ctx.fillText(label, 6, y + 3)
     }
 
     // 经线（竖直）
@@ -392,6 +393,36 @@ export function useWorldMap(options: WorldMapOptions = {}) {
     ctx.restore()
   }
 
+  /**
+   * 纬线标签固定在画布左边缘，不随地图横向平移；
+   * 所以它不烘焙进静态缓存，而是每帧单独画在动画层上。
+   */
+  function drawLatitudeLabels(ctx: CanvasRenderingContext2D): void {
+    const step = gridStep()
+    const unitY = scaleY * zoom
+    const firstLat = Math.ceil((-90 - offsetY) / step) * step
+    const lastLat = Math.floor((90 - offsetY) / step) * step
+
+    ctx.save()
+    ctx.fillStyle = COLOR_GRID_LABEL
+    ctx.font = '12px sans-serif'
+    ctx.textAlign = 'left'
+    ctx.textBaseline = 'top'
+    ctx.globalAlpha = 0.7
+    for (let lat = firstLat; lat <= lastLat; lat += step) {
+      if (lat < -90 || lat > 90) {
+        continue
+      }
+      const y = cy - (lat + offsetY) * unitY
+      if (y < 0 || y > height) {
+        continue
+      }
+      const label = lat === 0 ? '0°' : lat > 0 ? `${lat}°N` : `${-lat}°S`
+      ctx.fillText(label, 6, y + 3)
+    }
+    ctx.restore()
+  }
+
   /** 市级行政区：只在放大到 CITY_ZOOM 之后绘制已加载的国家 */
   function drawAdmin2(ctx: CanvasRenderingContext2D): void {
     if (zoom < CITY_ZOOM || !adm2Store) {
@@ -422,6 +453,49 @@ export function useWorldMap(options: WorldMapOptions = {}) {
     drawFeatures(ctx, features, { stroke: COLOR_ADM2_STROKE, width: 1 })
   }
 
+  /** 静态层内容：网格、市级行政区、国界描边；完整重建与平移补绘共用 */
+  function paintStatic(ctx: CanvasRenderingContext2D): void {
+    drawGrid(ctx)
+
+    if (countryFeatures.length === 0) {
+      return
+    }
+
+    // 1. 市级行政区（先画，让国界压在它上面）
+    drawAdmin2(ctx)
+
+    // 2. 外层发光描边
+    drawFeatures(ctx, countryFeatures, {
+      stroke: COLOR_OUTLINE_GLOW,
+      width: 2.5,
+      shadowBlur: 6,
+      shadowColor: COLOR_OUTLINE_GLOW,
+      alpha: 0.9,
+    })
+
+    // 3. 内层亮线
+    drawFeatures(ctx, countryFeatures, {
+      stroke: COLOR_OUTLINE_INNER,
+      width: 1,
+      alpha: 0.6,
+    })
+  }
+
+  /**
+   * 把相机偏移吸附到设备像素网格。
+   * 这样拖动时缓存只需做整数像素平移，补绘的窄条和旧图不会出现亚像素错位。
+   */
+  function snapCameraToPixels(): void {
+    const unitX = scaleX * zoom * dpr
+    const unitY = scaleY * zoom * dpr
+    if (unitX > 0) {
+      offsetX = Math.round(offsetX * unitX) / unitX
+    }
+    if (unitY > 0) {
+      offsetY = Math.round(offsetY * unitY) / unitY
+    }
+  }
+
   /** 把静态内容画进离屏画布，扫描线动画每帧只做一次 drawImage */
   function rebuildCache(): void {
     const canvas = cacheCanvas ?? (cacheCanvas = document.createElement('canvas'))
@@ -432,6 +506,7 @@ export function useWorldMap(options: WorldMapOptions = {}) {
 
     measure()
     clampOffsetY()
+    snapCameraToPixels()
 
     const cacheWidth = Math.max(1, Math.round(width * dpr))
     const cacheHeight = Math.max(1, Math.round(height * dpr))
@@ -439,38 +514,97 @@ export function useWorldMap(options: WorldMapOptions = {}) {
       canvas.width = cacheWidth
       canvas.height = cacheHeight
     }
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
 
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     ctx.fillStyle = COLOR_BACKGROUND
     ctx.fillRect(0, 0, width, height)
-
-    drawGrid(ctx)
-
-    if (countryFeatures.length > 0) {
-      // 1. 市级行政区（先画，让国界压在它上面）
-      drawAdmin2(ctx)
-
-      // 2. 外层发光描边
-      drawFeatures(ctx, countryFeatures, {
-        stroke: COLOR_OUTLINE_GLOW,
-        width: 2.5,
-        shadowBlur: 6,
-        shadowColor: COLOR_OUTLINE_GLOW,
-        alpha: 0.9,
-      })
-
-      // 3. 内层亮线
-      drawFeatures(ctx, countryFeatures, {
-        stroke: COLOR_OUTLINE_INNER,
-        width: 1,
-        alpha: 0.6,
-      })
-    }
+    paintStatic(ctx)
 
     cacheCamera = { width, height, dpr, scaleX, scaleY, zoom, offsetX, offsetY }
     cacheDirty = false
     // 视角变化后看看当前视口里有哪些国家需要市级数据
     scheduleAdmin2(180)
+  }
+
+  /**
+   * 拖动时的增量更新：把旧缓存按整数像素平移，只对露出来的窄条重绘静态层。
+   * 相比整屏重建，补绘面积通常只有几百分之一，拖动时也能实时渲染新区域。
+   */
+  function panCache(): boolean {
+    const previous = cacheCanvas
+    const snapshot = cacheCamera
+    if (!previous || !snapshot) {
+      return false
+    }
+    if (
+      snapshot.width !== width ||
+      snapshot.height !== height ||
+      snapshot.dpr !== dpr ||
+      snapshot.zoom !== zoom ||
+      snapshot.scaleX !== scaleX ||
+      snapshot.scaleY !== scaleY
+    ) {
+      return false
+    }
+
+    const unitX = scaleX * zoom * dpr
+    const unitY = scaleY * zoom * dpr
+    if (unitX <= 0 || unitY <= 0) {
+      return false
+    }
+    const shiftX = Math.round((offsetX - snapshot.offsetX) * unitX)
+    const shiftY = Math.round(-(offsetY - snapshot.offsetY) * unitY)
+    if (shiftX === 0 && shiftY === 0) {
+      return true
+    }
+
+    const pixelWidth = previous.width
+    const pixelHeight = previous.height
+    if (Math.abs(shiftX) >= pixelWidth || Math.abs(shiftY) >= pixelHeight) {
+      return false
+    }
+
+    const canvas = cacheSwapCanvas ?? (cacheSwapCanvas = document.createElement('canvas'))
+    if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+      canvas.width = pixelWidth
+      canvas.height = pixelHeight
+    }
+    const ctx = canvas.getContext('2d')
+    if (!ctx) {
+      return false
+    }
+
+    // 1. 旧缓存整体平移（设备像素，整数平移不会模糊）
+    ctx.setTransform(1, 0, 0, 1, 0, 0)
+    ctx.drawImage(previous, shiftX, shiftY)
+
+    // 2. 只补绘新露出的窄条
+    ctx.save()
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    ctx.beginPath()
+    if (shiftX > 0) {
+      ctx.rect(0, 0, shiftX / dpr, height)
+    } else if (shiftX < 0) {
+      ctx.rect((pixelWidth + shiftX) / dpr, 0, -shiftX / dpr, height)
+    }
+    if (shiftY > 0) {
+      ctx.rect(0, 0, width, shiftY / dpr)
+    } else if (shiftY < 0) {
+      ctx.rect(0, (pixelHeight + shiftY) / dpr, width, -shiftY / dpr)
+    }
+    ctx.clip()
+    ctx.fillStyle = COLOR_BACKGROUND
+    ctx.fillRect(0, 0, width, height)
+    paintStatic(ctx)
+    ctx.restore()
+
+    // 两块画布交换，旧的留作下一次平移的源
+    cacheSwapCanvas = previous
+    cacheCanvas = canvas
+    cacheCamera = { width, height, dpr, scaleX, scaleY, zoom, offsetX, offsetY }
+    cacheDirty = false
+    scheduleAdmin2(180)
+    return true
   }
 
   /** 悬停 / 选中高亮：画在动画层，不触发静态缓存重建 */
@@ -630,31 +764,35 @@ export function useWorldMap(options: WorldMapOptions = {}) {
       markDirty()
     }
 
-    // 拖动过程中不重建静态层：直接用旧图按位移贴图，保证拖拽跟手
-    if (cacheDirty && (!isDragging || !cacheCamera)) {
+    // 视角变化时优先做增量平移：只补绘新露出的窄条，拖动时也能实时看到新区域。
+    // 缩放、尺寸变化或跨度过大时才整屏重建。
+    if (cacheDirty || !cacheCamera) {
       rebuildCache()
+    } else if (
+      cacheCamera.width !== width ||
+      cacheCamera.height !== height ||
+      cacheCamera.dpr !== dpr ||
+      cacheCamera.zoom !== zoom ||
+      cacheCamera.scaleX !== scaleX ||
+      cacheCamera.scaleY !== scaleY
+    ) {
+      rebuildCache()
+    } else if (cacheCamera.offsetX !== offsetX || cacheCamera.offsetY !== offsetY) {
+      if (!panCache()) {
+        rebuildCache()
+      }
     }
 
     ctx.setTransform(1, 0, 0, 1, 0, 0)
     ctx.fillStyle = COLOR_BACKGROUND
     ctx.fillRect(0, 0, pixelWidth, pixelHeight)
 
-    if (cacheCanvas && cacheCamera) {
-      let shiftX = 0
-      let shiftY = 0
-      // 尺寸（进而缩放比例）变化时缓存图已经失效，按旧图贴图只会错位，直接等重建
-      if (
-        cacheCamera.zoom === zoom &&
-        cacheCamera.scaleX === scaleX &&
-        cacheCamera.scaleY === scaleY
-      ) {
-        shiftX = (offsetX - cacheCamera.offsetX) * scaleX * zoom * dpr
-        shiftY = -(offsetY - cacheCamera.offsetY) * scaleY * zoom * dpr
-      }
-      ctx.drawImage(cacheCanvas, Math.round(shiftX), Math.round(shiftY))
+    if (cacheCanvas) {
+      ctx.drawImage(cacheCanvas, 0, 0)
     }
 
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    drawLatitudeLabels(ctx)
     drawHighlights(ctx)
     drawScanline(ctx)
     drawConnector(ctx)
@@ -970,6 +1108,8 @@ export function useWorldMap(options: WorldMapOptions = {}) {
         offsetX = dragStartOffsetX + (event.clientX - dragStartX) / unitX
         offsetY = dragStartOffsetY - (event.clientY - dragStartY) / unitY
         clampOffsetY()
+        // 吸附到设备像素后，缓存才能用整数像素平移补绘
+        snapCameraToPixels()
       }
       return
     }
@@ -996,13 +1136,16 @@ export function useWorldMap(options: WorldMapOptions = {}) {
     }
     isDragging = false
 
-    // 拖动结束后把经度偏移规整回 [-180, 180)，避免数值无限增长
+    // 拖动结束后把经度偏移规整回 [-180, 180)，避免数值无限增长。
+    // 同步修正缓存快照的偏移量，画面不变，也不需要为此重建缓存。
     const normalizedOffsetX = ((((offsetX + 180) % 360) + 360) % 360) - 180
     if (normalizedOffsetX !== offsetX) {
+      const delta = normalizedOffsetX - offsetX
       offsetX = normalizedOffsetX
+      if (cacheCamera) {
+        cacheCamera.offsetX += delta
+      }
     }
-    // 拖拽期间冻结的静态层需要按最终位置重画一次
-    markDirty()
 
     const dx = event.clientX - pointerDownAt.x
     const dy = event.clientY - pointerDownAt.y
@@ -1024,7 +1167,6 @@ export function useWorldMap(options: WorldMapOptions = {}) {
 
   function onPointerCancel(): void {
     isDragging = false
-    markDirty()
   }
 
   function onPointerLeave(): void {
