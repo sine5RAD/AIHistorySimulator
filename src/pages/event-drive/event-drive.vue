@@ -1,9 +1,20 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
 import { useAiSettings } from '@/composables/ai-settings'
 import { defaultEventDrivePrompt } from '@/composables/prompt-defaults'
+import {
+  EVENT_DRIVE_ACTIONS,
+  EVENT_DRIVE_TIME_UNITS,
+  buildEventDrivePrompt,
+  createEmptyEventDriveActionInput,
+  isEventDrivePromptComplete,
+  sanitizeTimeDigits,
+  sortCountryNamesByPinyin,
+  type EventDriveActionInput,
+  type EventDriveActionKind,
+} from '@/utils/event-drive-actions'
 import { submitPreparedPrompt } from '@/utils/submit-commition'
 import FloatingCountrySidebar, {
   type FloatingCountrySidebarEditStatPayload,
@@ -104,6 +115,10 @@ const selectedSnapshotId = ref(LIVE_SESSION_SNAPSHOT_ID)
 const snapshotMenuOpen = ref(false)
 const pendingWorldLandPayload = ref<WorldLandTransferPayload | null>(null)
 const pendingWorldLandSource = ref<'session' | 'local' | null>(null)
+const actionMenuOpen = ref(false)
+const activeActionKind = ref<EventDriveActionKind | null>(null)
+const actionInput = ref<EventDriveActionInput>(createEmptyEventDriveActionInput())
+const actionPickerRef = ref<HTMLElement | null>(null)
 
 const formatIndicatorValue = (value: number) => {
   if (!Number.isFinite(value)) {
@@ -240,6 +255,48 @@ const countrySidebarItems = computed<FloatingCountrySidebarItem[]>(() => {
 })
 
 const systemPrompt = defaultEventDrivePrompt
+
+const currentCountryNames = computed(() =>
+  sortCountryNamesByPinyin(
+    getCountriesFromPayload(activeWorldPayload.value)
+      .map((country) =>
+        isRecord(country) && typeof country.国家名称 === 'string' ? country.国家名称.trim() : '',
+      )
+      .filter((name) => name.length > 0),
+  ),
+)
+
+const activeActionOption = computed(
+  () => EVENT_DRIVE_ACTIONS.find((option) => option.kind === activeActionKind.value) ?? null,
+)
+
+const activeActionLabel = computed(() => activeActionOption.value?.label ?? '选择指令')
+
+const activeActionNeedsCountry = computed(
+  () => activeActionKind.value === 'event' || activeActionKind.value === 'story',
+)
+
+const hasCurrentCountries = computed(() => currentCountryNames.value.length > 0)
+
+const actionPrompt = computed(() =>
+  activeActionKind.value ? buildEventDrivePrompt(activeActionKind.value, actionInput.value) : '',
+)
+
+const actionPromptReady = computed(() =>
+  activeActionKind.value
+    ? isEventDrivePromptComplete(activeActionKind.value, actionInput.value)
+    : false,
+)
+
+watch(
+  currentCountryNames,
+  (names) => {
+    if (!names.includes(actionInput.value.country)) {
+      actionInput.value.country = names[0] ?? ''
+    }
+  },
+  { immediate: true },
+)
 
 const hasApiKey = computed(() => apiValue.value.trim().length > 0)
 const settingsSummary = computed(() => {
@@ -1395,6 +1452,84 @@ const sendPendingWorldLandPayload = async () => {
   }
 }
 
+const closeActionMenu = () => {
+  actionMenuOpen.value = false
+}
+
+const toggleActionMenu = () => {
+  actionMenuOpen.value = !actionMenuOpen.value
+}
+
+const selectAction = (kind: EventDriveActionKind) => {
+  activeActionKind.value = kind
+  closeActionMenu()
+}
+
+const closeActionBuilder = () => {
+  activeActionKind.value = null
+}
+
+const handleDocumentPointerDown = (event: PointerEvent) => {
+  if (!actionMenuOpen.value) {
+    return
+  }
+
+  const picker = actionPickerRef.value
+  const target = event.target
+
+  if (picker && target instanceof Node && picker.contains(target)) {
+    return
+  }
+
+  closeActionMenu()
+}
+
+const handleTimeInput = (event: Event) => {
+  const target = event.target as HTMLInputElement | null
+
+  if (!target) {
+    return
+  }
+
+  const digits = sanitizeTimeDigits(target.value)
+  actionInput.value.time = digits
+
+  if (target.value !== digits) {
+    target.value = digits
+  }
+}
+
+const resetActionTextInputs = () => {
+  actionInput.value.time = ''
+  actionInput.value.event = ''
+  actionInput.value.topic = ''
+  actionInput.value.question = ''
+  actionInput.value.setting1 = ''
+  actionInput.value.setting2 = ''
+}
+
+const sendActionPrompt = async () => {
+  if (!actionPromptReady.value || isSending.value) {
+    return
+  }
+
+  const sent = await submitChatContent(actionPrompt.value)
+
+  if (sent) {
+    resetActionTextInputs()
+  }
+}
+
+const fillActionPromptIntoComposer = () => {
+  if (!actionPromptReady.value) {
+    return
+  }
+
+  const existingPrompt = chatInput.value.trim()
+  chatInput.value = existingPrompt ? `${existingPrompt}\n${actionPrompt.value}` : actionPrompt.value
+  closeActionBuilder()
+}
+
 const handleComposerKeydown = (event: KeyboardEvent) => {
   if (event.key === 'Enter' && !event.shiftKey) {
     event.preventDefault()
@@ -1403,6 +1538,8 @@ const handleComposerKeydown = (event: KeyboardEvent) => {
 }
 
 onMounted(() => {
+  document.addEventListener('pointerdown', handleDocumentPointerDown)
+
   const isFreshSession = window.sessionStorage.getItem(EVENT_DRIVE_FRESH_SESSION_KEY) === 'true'
 
   if (isFreshSession) {
@@ -1453,6 +1590,10 @@ onMounted(() => {
   ) {
     void sendPendingWorldLandPayload()
   }
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('pointerdown', handleDocumentPointerDown)
 })
 
 watch(
@@ -1598,6 +1739,208 @@ const selectedSnapshotLabel = computed(() => {
           </div>
 
           <div class="composer">
+            <div class="action-toolbar">
+              <div ref="actionPickerRef" class="action-picker" @keydown.esc="closeActionMenu">
+                <button
+                  class="action-trigger"
+                  type="button"
+                  :aria-expanded="actionMenuOpen"
+                  aria-haspopup="menu"
+                  @click="toggleActionMenu"
+                >
+                  <span class="action-trigger-label">事件推进</span>
+                  <strong>{{ activeActionLabel }}</strong>
+                  <span class="action-trigger-caret" aria-hidden="true">▾</span>
+                </button>
+
+                <div
+                  v-if="actionMenuOpen"
+                  class="action-menu"
+                  role="menu"
+                  aria-label="事件推进指令"
+                >
+                  <button
+                    v-for="option in EVENT_DRIVE_ACTIONS"
+                    :key="option.kind"
+                    class="action-menu-item"
+                    :class="{ 'is-active': activeActionKind === option.kind }"
+                    type="button"
+                    role="menuitemradio"
+                    :aria-checked="activeActionKind === option.kind"
+                    @click="selectAction(option.kind)"
+                  >
+                    <span class="action-menu-label">{{ option.label }}</span>
+                    <span class="action-menu-description">{{ option.description }}</span>
+                  </button>
+                </div>
+              </div>
+
+              <p class="action-toolbar-hint">选择指令后按模板填写，固定文字会随指令一起发送。</p>
+            </div>
+
+            <form
+              v-if="activeActionKind"
+              class="action-builder"
+              aria-label="事件推进指令编辑"
+              @submit.prevent="sendActionPrompt"
+            >
+              <div class="action-builder-header">
+                <div>
+                  <h3 class="action-builder-title">{{ activeActionLabel }}</h3>
+                  <p class="action-builder-description">{{ activeActionOption?.description }}</p>
+                </div>
+                <button class="action-builder-close" type="button" @click="closeActionBuilder">
+                  收起
+                </button>
+              </div>
+
+              <p
+                v-if="activeActionNeedsCountry && !hasCurrentCountries"
+                class="action-builder-empty"
+              >
+                当前世界还没有国家数据，请先发送世界观 JSON 后再使用该指令。
+              </p>
+
+              <div v-if="activeActionKind === 'time'" class="action-template">
+                <span class="action-fixed">时间推进</span>
+                <input
+                  :value="actionInput.time"
+                  class="action-input action-input-time"
+                  type="text"
+                  inputmode="numeric"
+                  pattern="[0-9]*"
+                  autocomplete="off"
+                  placeholder="数量"
+                  aria-label="时间数量"
+                  :disabled="isSending"
+                  @input="handleTimeInput"
+                />
+                <select
+                  v-model="actionInput.timeUnit"
+                  class="action-select"
+                  aria-label="时间单位"
+                  :disabled="isSending"
+                >
+                  <option v-for="unit in EVENT_DRIVE_TIME_UNITS" :key="unit" :value="unit">
+                    {{ unit }}
+                  </option>
+                </select>
+              </div>
+
+              <div v-else-if="activeActionKind === 'event'" class="action-template">
+                <select
+                  v-model="actionInput.country"
+                  class="action-select action-select-country"
+                  aria-label="国家"
+                  :disabled="!hasCurrentCountries || isSending"
+                >
+                  <option v-if="!hasCurrentCountries" value="">暂无可选国家</option>
+                  <option
+                    v-for="countryName in currentCountryNames"
+                    :key="countryName"
+                    :value="countryName"
+                  >
+                    {{ countryName }}
+                  </option>
+                </select>
+                <span class="action-fixed">发生</span>
+                <input
+                  v-model="actionInput.event"
+                  class="action-input action-input-grow"
+                  type="text"
+                  placeholder="事件，例如：政变"
+                  aria-label="事件内容"
+                  :disabled="isSending"
+                />
+              </div>
+
+              <div v-else-if="activeActionKind === 'story'" class="action-template">
+                <span class="action-fixed">请讲述一个在</span>
+                <select
+                  v-model="actionInput.country"
+                  class="action-select action-select-country"
+                  aria-label="国家"
+                  :disabled="!hasCurrentCountries || isSending"
+                >
+                  <option v-if="!hasCurrentCountries" value="">暂无可选国家</option>
+                  <option
+                    v-for="countryName in currentCountryNames"
+                    :key="countryName"
+                    :value="countryName"
+                  >
+                    {{ countryName }}
+                  </option>
+                </select>
+                <span class="action-fixed">发生的，主题为</span>
+                <input
+                  v-model="actionInput.topic"
+                  class="action-input action-input-grow"
+                  type="text"
+                  placeholder="主题，例如：战争"
+                  aria-label="故事主题"
+                  :disabled="isSending"
+                />
+                <span class="action-fixed">的故事</span>
+              </div>
+
+              <div v-else-if="activeActionKind === 'question'" class="action-template">
+                <input
+                  v-model="actionInput.question"
+                  class="action-input action-input-grow"
+                  type="text"
+                  placeholder="问题内容，例如：某国的政治制度是什么"
+                  aria-label="问题内容"
+                  :disabled="isSending"
+                />
+                <span class="action-fixed">?</span>
+              </div>
+
+              <div v-else-if="activeActionKind === 'conflict'" class="action-template">
+                <span class="action-fixed">设定</span>
+                <input
+                  v-model="actionInput.setting1"
+                  class="action-input action-input-grow"
+                  type="text"
+                  placeholder="设定 1"
+                  aria-label="设定 1"
+                  :disabled="isSending"
+                />
+                <span class="action-fixed">与设定</span>
+                <input
+                  v-model="actionInput.setting2"
+                  class="action-input action-input-grow"
+                  type="text"
+                  placeholder="设定 2"
+                  aria-label="设定 2"
+                  :disabled="isSending"
+                />
+                <span class="action-fixed">冲突，请给出一个合理解释或修正后一个设定</span>
+              </div>
+
+              <div class="action-preview">
+                <span class="action-preview-label">将发送</span>
+                <code class="action-preview-text">{{ actionPrompt }}</code>
+              </div>
+
+              <div class="action-builder-footer">
+                <button
+                  class="primary-button"
+                  type="submit"
+                  :disabled="!actionPromptReady || isSending"
+                >
+                  {{ isSending ? '发送中...' : '发送' }}
+                </button>
+                <button
+                  class="ghost-button"
+                  type="button"
+                  :disabled="!actionPromptReady || isSending"
+                  @click="fillActionPromptIntoComposer"
+                >
+                  填入输入框
+                </button>
+              </div>
+            </form>
+
             <textarea
               v-model="chatInput"
               class="composer-input"
@@ -1640,6 +1983,7 @@ const selectedSnapshotLabel = computed(() => {
             <li>讲述故事：让 AI 讲某个国家、战争或时期中的人物故事。</li>
             <li>提问：例如“某国的政治制度是什么？”或“国家 A 和国家 B 是否接壤”。</li>
             <li>矛盾修正：当前后叙述冲突时，让 AI 指出矛盾并要求补充信息。</li>
+            <li>也可以使用输入框上方的「事件推进」下拉菜单，按模板快速发送上述指令。</li>
           </ul>
         </aside>
       </aside>
@@ -1986,6 +2330,262 @@ const selectedSnapshotLabel = computed(() => {
   flex: 0 0 auto;
 }
 
+.action-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.action-picker {
+  position: relative;
+  flex: 0 0 auto;
+  min-width: 240px;
+}
+
+.action-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-background);
+  color: var(--color-text);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.action-trigger:hover {
+  border-color: var(--color-border-hover);
+}
+
+.action-trigger-label {
+  flex-shrink: 0;
+  opacity: 0.82;
+}
+
+.action-trigger strong {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.action-trigger-caret {
+  flex-shrink: 0;
+  font-size: 12px;
+  opacity: 0.72;
+}
+
+.action-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 30;
+  width: min(420px, 80vw);
+  max-height: 60vh;
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-background);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.12);
+}
+
+.action-menu-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.action-menu-item:hover,
+.action-menu-item.is-active {
+  background: var(--color-background-soft);
+}
+
+.action-menu-label {
+  font-weight: 700;
+}
+
+.action-menu-description {
+  font-size: 13px;
+  line-height: 1.5;
+  opacity: 0.75;
+}
+
+.action-toolbar-hint {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--color-text);
+  opacity: 0.7;
+}
+
+.action-builder {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 16px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-background-soft);
+}
+
+.action-builder-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.action-builder-title {
+  margin: 0;
+  font-size: 15px;
+  color: var(--color-heading);
+}
+
+.action-builder-description {
+  margin: 4px 0 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--color-text);
+  opacity: 0.78;
+}
+
+.action-builder-close {
+  flex-shrink: 0;
+  padding: 6px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-text);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+}
+
+.action-builder-close:hover {
+  border-color: var(--color-border-hover);
+}
+
+.action-builder-empty {
+  margin: 0;
+  color: #d92d20;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.action-template {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  line-height: 1.8;
+}
+
+.action-fixed {
+  color: var(--color-text);
+}
+
+.action-input,
+.action-select {
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-background);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 14px;
+}
+
+.action-input:focus,
+.action-select:focus {
+  outline: none;
+  border-color: var(--color-border-hover);
+}
+
+.action-input:disabled,
+.action-select:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.action-input-time {
+  width: 6.5em;
+}
+
+.action-input-grow {
+  flex: 1 1 180px;
+  min-width: 160px;
+}
+
+.action-select-country {
+  min-width: 120px;
+  max-width: 220px;
+}
+
+.action-preview {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px dashed var(--color-border-hover);
+  border-radius: 8px;
+  background: var(--color-background);
+}
+
+.action-preview-label {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--color-text);
+  opacity: 0.7;
+}
+
+.action-preview-text {
+  color: var(--color-text);
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.action-builder-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.action-builder-footer .primary-button,
+.action-builder-footer .ghost-button {
+  padding: 9px 18px;
+}
+
+.action-builder-footer .ghost-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .composer-input {
   width: 100%;
   resize: vertical;
@@ -2109,6 +2709,28 @@ const selectedSnapshotLabel = computed(() => {
 
   .snapshot-menu {
     width: 100%;
+  }
+
+  .action-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .action-picker {
+    min-width: 0;
+  }
+
+  .action-menu {
+    width: 100%;
+  }
+
+  .action-builder {
+    padding: 14px;
+  }
+
+  .action-input-grow {
+    flex-basis: 100%;
+    min-width: 0;
   }
 
   .primary-button,
