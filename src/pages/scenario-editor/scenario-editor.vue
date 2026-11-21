@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import {
   useTerritoryMap,
   type TerritoryAreaGroup,
   type TerritoryAssignment,
 } from '@/composables/territory-map'
+import { defaultScenarioReviewPrompt } from '@/composables/prompt-defaults'
+import { readAiSettingsFromStorage, submitPreparedPrompt } from '@/utils/submit-commition'
 import { getFeatureTerritoryCode, normalizeTerritoryCode } from '@/lib/map/territory-code'
 import type { WorldMapFeature } from '@/types/geo'
 import type { RegimeData, ScenarioData, TerritoryData, TerritoryLevel } from '@/types/scenario'
@@ -33,6 +35,7 @@ import {
   toColorInputValue,
   toCountryData,
 } from '@/utils/scenario-data'
+import { buildIndexedRegimes, type RegimeSortMode } from '@/utils/regime-sort'
 
 defineOptions({
   name: 'ScenarioEditorPage',
@@ -63,11 +66,20 @@ const powerHints: Record<PowerKey, string> = {
 const scenario = ref<ScenarioData>(createEmptyScenarioData())
 const currentIndex = ref(0)
 const activeTab = ref<EditorTab>('regime')
+const regimeSortMode = ref<RegimeSortMode>('pinyin')
 const statusMessage = ref('')
 const errorMessage = ref('')
 const lastSavedAt = ref<Date | null>(null)
 const draftPersistFailed = ref(false)
 const jsonPanelOpen = ref(false)
+
+const isSendingToAi = ref(false)
+const aiPanelOpen = ref(false)
+const aiReplyText = ref('')
+const aiErrorText = ref('')
+const aiModelLabel = ref('')
+const aiInputChars = ref(0)
+const aiPanelRef = ref<HTMLElement | null>(null)
 
 const scenarioFileInput = ref<HTMLInputElement | null>(null)
 const worldFileInput = ref<HTMLInputElement | null>(null)
@@ -82,12 +94,33 @@ const currentRegime = computed<RegimeData>(
 )
 const hasCurrentRegime = computed(() => Boolean(scenario.value.存在国家[currentIndex.value]))
 const regimeCount = computed(() => scenario.value.存在国家.length)
+
+/**
+ * 「玩家操控国家」复选框：勾选表示玩家操控，对应 JSON 里 `AI控制: false`。
+ * 事件驱动提示词按 `AI控制` 判断哪些国家交给 AI 推演，所以这里只做一次取反。
+ */
+const isPlayerControlled = computed({
+  get: () => !currentRegime.value.AI控制,
+  set: (value: boolean) => {
+    currentRegime.value.AI控制 = !value
+  },
+})
+
+const playerControlledCount = computed(
+  () => scenario.value.存在国家.filter((regime) => !regime.AI控制).length,
+)
+const aiControlledCount = computed(() => regimeCount.value - playerControlledCount.value)
+
 const territoryTotal = computed(() =>
   scenario.value.存在国家.reduce((total, regime) => total + regime.领土.length, 0),
 )
 const leaderTotal = computed(() =>
   scenario.value.存在国家.reduce((total, regime) => total + regime.领导人.length, 0),
 )
+const sortedRegimes = computed(() =>
+  buildIndexedRegimes(scenario.value.存在国家, regimeSortMode.value),
+)
+const regimeListRef = ref<HTMLElement | null>(null)
 
 const currentColorPickerValue = computed(() => toColorInputValue(currentRegime.value.代表色))
 const currentColorIsHex = computed(() => normalizeHexColor(currentRegime.value.代表色) !== null)
@@ -312,6 +345,7 @@ const loadScenarioFromValue = (value: unknown, sourceLabel: string) => {
   scenario.value = next
   currentIndex.value = 0
   activeTab.value = 'regime'
+  resetAiReview()
 
   showMessage(
     next.存在国家.length
@@ -352,6 +386,7 @@ const createNewScenario = () => {
   scenario.value = createEmptyScenarioData()
   currentIndex.value = 0
   activeTab.value = 'regime'
+  resetAiReview()
   showMessage('已新建空剧本。')
 }
 
@@ -399,10 +434,115 @@ const downloadText = (content: string, fileName: string) => {
   window.URL.revokeObjectURL(url)
 }
 
+/* ---------- 发送至 AI ---------- */
+
+/** 用于丢弃「切换剧本后才返回」的旧请求结果。 */
+let aiRequestId = 0
+
+const resetAiReview = () => {
+  aiRequestId += 1
+  isSendingToAi.value = false
+  aiPanelOpen.value = false
+  aiReplyText.value = ''
+  aiErrorText.value = ''
+  aiModelLabel.value = ''
+  aiInputChars.value = 0
+}
+
+const sendScenarioToAi = async () => {
+  if (isSendingToAi.value) {
+    return
+  }
+
+  if (!scenario.value.存在国家.length) {
+    showMessage('剧本里还没有政权，先新建或导入政权再发送给 AI。', 'error')
+    return
+  }
+
+  const settings = readAiSettingsFromStorage()
+
+  if (!settings || !settings.api.trim()) {
+    showMessage('还没有配置 API，请先到「设置」页填写提供商、API 与模型。', 'error')
+    return
+  }
+
+  const scenarioJson = scenarioExportText.value
+  const requestId = (aiRequestId += 1)
+
+  aiModelLabel.value = `${settings.provider} / ${settings.model}`
+  aiInputChars.value = scenarioJson.length
+  aiReplyText.value = ''
+  aiErrorText.value = ''
+  aiPanelOpen.value = true
+  isSendingToAi.value = true
+
+  try {
+    const response = await submitPreparedPrompt({
+      messages: [
+        { role: 'system' as const, content: defaultScenarioReviewPrompt },
+        {
+          role: 'user' as const,
+          content: [
+            `下面是当前剧本 JSON（共 ${regimeCount.value} 个政权，其中玩家操控 ${playerControlledCount.value} 个），请按系统提示分析：`,
+            '',
+            '```json',
+            scenarioJson,
+            '```',
+          ].join('\n'),
+        },
+      ],
+    })
+
+    // 请求期间切到别的剧本时，旧结果直接丢弃。
+    if (requestId !== aiRequestId) {
+      return
+    }
+
+    if (!response?.trim()) {
+      aiErrorText.value = '模型没有返回有效内容，请检查设置页的 API 与模型后重试。'
+      return
+    }
+
+    aiReplyText.value = response.trim()
+
+    await nextTick()
+    aiPanelRef.value?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' })
+  } catch (error) {
+    if (requestId === aiRequestId) {
+      aiErrorText.value = '发送失败，请检查网络或 API 配置后重试。'
+    }
+    console.error('Failed to send scenario to AI', error)
+  } finally {
+    if (requestId === aiRequestId) {
+      isSendingToAi.value = false
+    }
+  }
+}
+
+const copyAiReply = async () => {
+  if (!aiReplyText.value) {
+    return
+  }
+
+  try {
+    await navigator.clipboard.writeText(aiReplyText.value)
+    showMessage('AI 回复已复制。')
+  } catch (error) {
+    console.error('Failed to copy AI reply', error)
+    showMessage('复制失败，请在回复面板里手动选择复制。', 'error')
+  }
+}
+
 /* ---------- 政权级操作 ---------- */
 
 const selectRegime = (index: number) => {
   currentIndex.value = index
+}
+
+const scrollActiveRegimeIntoView = async () => {
+  await nextTick()
+  const active = regimeListRef.value?.querySelector<HTMLElement>('.regime-item.is-active')
+  active?.scrollIntoView?.({ block: 'nearest' })
 }
 
 const createNewRegimeName = (): string => {
@@ -442,7 +582,8 @@ const addRegime = () => {
   scenario.value.存在国家.push(regime)
   currentIndex.value = scenario.value.存在国家.length - 1
   activeTab.value = 'regime'
-  showMessage(`已新建「${regime.国家名称}」，可以开始填写政体、领导人与领土。`)
+  void scrollActiveRegimeIntoView()
+  showMessage(`已新建「${regime.国家名称}」，默认由 AI 操控；勾选「玩家操控国家」可交给玩家。`)
 }
 
 const duplicateRegime = () => {
@@ -459,6 +600,7 @@ const duplicateRegime = () => {
 
   scenario.value.存在国家.push(clone)
   currentIndex.value = scenario.value.存在国家.length - 1
+  void scrollActiveRegimeIntoView()
   showMessage(`已复制「${source.国家名称 || '未命名政权'}」。`)
 }
 
@@ -793,6 +935,7 @@ function applyWorldData(value: unknown, sourceLabel: string) {
   currentIndex.value = 0
   activeTab.value = 'territory'
   jsonPanelOpen.value = false
+  resetAiReview()
   showMessage(`已从「${sourceLabel}」生成 ${next.存在国家.length} 个政权。`)
 }
 
@@ -919,6 +1062,7 @@ function importHandoff(raw: string) {
   scenario.value = next
   currentIndex.value = 0
   activeTab.value = 'regime'
+  resetAiReview()
   showMessage(`已从文章转 JSON 载入 ${next.存在国家.length} 个政权。`)
 }
 
@@ -992,6 +1136,15 @@ onBeforeUnmount(() => {
         <button type="button" @click="triggerScenarioImport">导入剧本 JSON</button>
         <button type="button" class="primary" @click="exportScenario">导出剧本 JSON</button>
         <button type="button" @click="importWorldFromSession">从世界生成导入</button>
+        <button
+          type="button"
+          class="ai-action"
+          :disabled="isSendingToAi"
+          title="把当前剧本 JSON 发送到「设置」页配置的模型，并在这里显示回复"
+          @click="sendScenarioToAi"
+        >
+          {{ isSendingToAi ? 'AI 分析中…' : '发送至 AI' }}
+        </button>
       </div>
     </header>
 
@@ -1052,6 +1205,12 @@ onBeforeUnmount(() => {
         <span
           ><strong>{{ leaderTotal }}</strong> 领导人</span
         >
+        <span
+          ><strong>{{ playerControlledCount }}</strong> 玩家操控</span
+        >
+        <span
+          ><strong>{{ aiControlledCount }}</strong> AI 操控</span
+        >
         <span class="save-indicator">{{ lastSavedLabel }}</span>
       </div>
 
@@ -1076,6 +1235,36 @@ onBeforeUnmount(() => {
       </span>
     </div>
 
+    <section
+      v-if="aiPanelOpen"
+      ref="aiPanelRef"
+      class="ai-panel"
+      aria-label="AI 回复"
+      aria-live="polite"
+    >
+      <header class="ai-panel-header">
+        <div>
+          <p class="eyebrow">AI ANALYSIS</p>
+          <h2>AI 分析结果</h2>
+          <p class="ai-panel-meta">
+            <span>{{ aiModelLabel || '未配置模型' }}</span>
+            <span>发送 {{ aiInputChars }} 字符</span>
+            <span v-if="aiReplyText">回复 {{ aiReplyText.length }} 字符</span>
+          </p>
+        </div>
+        <div class="ai-panel-actions">
+          <button type="button" :disabled="!aiReplyText" @click="copyAiReply">复制回复</button>
+          <button type="button" @click="aiPanelOpen = false">收起</button>
+        </div>
+      </header>
+
+      <p v-if="isSendingToAi" class="ai-panel-loading">
+        正在等待 {{ aiModelLabel || '模型' }} 返回，政权与领土越多耗时越长…
+      </p>
+      <p v-if="aiErrorText" class="inline-error">{{ aiErrorText }}</p>
+      <pre v-if="aiReplyText" class="ai-reply-text">{{ aiReplyText }}</pre>
+    </section>
+
     <div class="editor-layout">
       <aside class="regime-rail" aria-label="政权列表">
         <div class="rail-heading">
@@ -1086,32 +1275,55 @@ onBeforeUnmount(() => {
           <button type="button" class="primary" @click="addRegime">+ 新建</button>
         </div>
 
+        <div v-if="regimeCount" class="rail-sort">
+          <span class="rail-sort-label">排序</span>
+          <div class="rail-sort-switch" role="group" aria-label="政权排序方式">
+            <button
+              type="button"
+              :class="{ 'is-active': regimeSortMode === 'pinyin' }"
+              @click="regimeSortMode = 'pinyin'"
+            >
+              拼音
+            </button>
+            <button
+              type="button"
+              :class="{ 'is-active': regimeSortMode === 'created' }"
+              @click="regimeSortMode = 'created'"
+            >
+              创建
+            </button>
+          </div>
+        </div>
+
         <div v-if="!regimeCount" class="rail-empty">
           <p>还没有政权。</p>
           <p>新建一个政权，或从世界生成导入已有国家。</p>
         </div>
 
-        <div v-else class="regime-list">
+        <div v-else ref="regimeListRef" class="regime-list">
           <button
-            v-for="(regime, index) in scenario.存在国家"
-            :key="`${regime.国家名称}-${index}`"
+            v-for="(entry, displayIndex) in sortedRegimes"
+            :key="`${entry.index}-${entry.name}`"
             type="button"
             class="regime-item"
-            :class="{ 'is-active': index === currentIndex }"
-            @click="selectRegime(index)"
+            :class="{ 'is-active': entry.index === currentIndex }"
+            @click="selectRegime(entry.index)"
           >
             <span
               class="regime-color"
-              :style="{ background: toColorInputValue(regime.代表色) }"
+              :style="{ background: toColorInputValue(entry.regime.代表色) }"
             ></span>
             <span class="regime-copy">
-              <span class="regime-name">{{ regime.国家名称 || '未命名政权' }}</span>
+              <span class="regime-name">
+                {{ entry.name }}
+                <span v-if="!entry.regime.AI控制" class="regime-tag">玩家</span>
+              </span>
               <span class="regime-meta">
-                {{ regime.政体 || '未填写政体' }} · {{ regime.领土.length }} 领土 ·
-                {{ regime.领导人.length }} 领导人
+                {{ entry.regime.政体 || '未填写政体' }} · {{ entry.regime.领土.length }} 领土 ·
+                {{ entry.regime.领导人.length }} 领导人
               </span>
             </span>
-            <span class="regime-order">{{ index + 1 }}</span>
+            <span class="regime-order">{{ displayIndex + 1 }}</span>
           </button>
         </div>
 
@@ -1175,6 +1387,28 @@ onBeforeUnmount(() => {
         </nav>
 
         <div v-if="activeTab === 'regime'" class="tab-panel">
+          <section class="form-section">
+            <div class="section-heading">
+              <div>
+                <h3>控制方式</h3>
+                <p>勾选后，事件推演中该政权由玩家下达指令；不勾选则交给 AI 自动推演。</p>
+              </div>
+              <span class="section-badge" :class="{ 'is-player': isPlayerControlled }">
+                {{ isPlayerControlled ? '玩家操控' : 'AI 操控' }}
+              </span>
+            </div>
+
+            <label class="control-toggle">
+              <input v-model="isPlayerControlled" type="checkbox" />
+              <span class="control-toggle-text">玩家操控国家</span>
+            </label>
+
+            <p class="inline-hint">
+              <code>"AI控制": {{ currentRegime.AI控制 }}</code>
+              会写入剧本 JSON：玩家操控为 false，AI 推演为 true；新建政权默认由 AI 操控。
+            </p>
+          </section>
+
           <section class="form-section">
             <div class="section-heading">
               <div>
@@ -1689,6 +1923,18 @@ button.danger:hover:not(:disabled) {
   background: color-mix(in oklab, var(--scenario-danger) 10%, var(--scenario-panel));
 }
 
+button.ai-action {
+  border-color: color-mix(in oklab, var(--scenario-accent) 70%, transparent);
+  background: color-mix(in oklab, var(--scenario-accent) 10%, var(--scenario-panel));
+  color: var(--scenario-accent);
+  font-weight: 600;
+}
+
+button.ai-action:hover:not(:disabled) {
+  border-color: var(--scenario-accent);
+  background: color-mix(in oklab, var(--scenario-accent) 18%, var(--scenario-panel));
+}
+
 .toast {
   position: fixed;
   right: 24px;
@@ -1838,6 +2084,63 @@ textarea {
   line-height: 1.6;
 }
 
+.ai-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid color-mix(in oklab, var(--scenario-accent) 45%, var(--color-border));
+  border-radius: 14px;
+  background: color-mix(in oklab, var(--scenario-accent) 6%, var(--scenario-panel));
+}
+
+.ai-panel-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.ai-panel-header h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.ai-panel-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 6px 0 0;
+  font-size: 11px;
+  opacity: 0.6;
+}
+
+.ai-panel-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.ai-panel-loading {
+  margin: 0;
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+.ai-reply-text {
+  max-height: 480px;
+  margin: 0;
+  padding: 12px 14px;
+  overflow: auto;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--scenario-panel-strong);
+  font-size: 12.5px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .editor-layout {
   display: grid;
   grid-template-columns: 300px minmax(0, 1fr);
@@ -1880,6 +2183,49 @@ textarea {
   font-size: 10px;
   letter-spacing: 0.18em;
   opacity: 0.5;
+}
+
+.rail-sort {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 2px;
+}
+
+.rail-sort-label {
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  opacity: 0.5;
+}
+
+.rail-sort-switch {
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-background);
+}
+
+.rail-sort-switch button {
+  padding: 3px 9px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  font-size: 10px;
+  opacity: 0.6;
+}
+
+.rail-sort-switch button:hover:not(:disabled) {
+  background: transparent;
+  opacity: 0.9;
+}
+
+.rail-sort-switch button.is-active {
+  background: var(--scenario-accent-soft);
+  color: var(--scenario-accent);
+  font-weight: 600;
+  opacity: 1;
 }
 
 .rail-empty {
@@ -1945,6 +2291,19 @@ textarea {
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.regime-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border: 1px solid color-mix(in oklab, #2f9e69 55%, transparent);
+  border-radius: 999px;
+  color: #2f9e69;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 15px;
+  vertical-align: middle;
 }
 
 .regime-meta {
@@ -2183,6 +2542,45 @@ textarea {
   font-size: 11px;
   line-height: 1.55;
   opacity: 0.55;
+}
+
+.inline-hint code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--scenario-panel-strong);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+}
+
+.control-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  width: fit-content;
+  padding: 10px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--color-background) 55%, transparent);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.control-toggle:hover {
+  border-color: var(--color-border-hover);
+}
+
+.control-toggle input[type='checkbox'] {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--scenario-accent);
+  cursor: pointer;
+}
+
+.section-badge.is-player {
+  border-color: color-mix(in oklab, #2f9e69 55%, transparent);
+  color: #2f9e69;
 }
 
 .wide-input {
@@ -2786,6 +3184,14 @@ textarea {
   }
 
   .regime-header-actions button {
+    flex: 1;
+  }
+
+  .ai-panel-actions {
+    width: 100%;
+  }
+
+  .ai-panel-actions button {
     flex: 1;
   }
 

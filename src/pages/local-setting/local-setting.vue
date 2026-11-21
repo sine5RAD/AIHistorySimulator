@@ -91,6 +91,10 @@ watch(eventDrivePrompt, () => {
           </option>
         </select>
       </div>
+      <p v-if="selectedProvider === 'OpenCode Go'" class="setting-hint">
+        订阅 OpenCode Go 后在 Console 创建个人 API Key（oc_sk_ 开头）；请求会走
+        <code>https://opencode.ai/inference/go</code> 的 OpenAI 兼容接口。
+      </p>
       <div class="setting-field">
         <label class="setting-label" for="api-input">API</label>
         <input
@@ -252,5 +256,13 @@ watch(eventDrivePrompt, () => {
 .setting-hint {
   font-size: 14px;
   color: var(--color-text);
+}
+
+.setting-hint code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--color-background-soft);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
 }
 </style>

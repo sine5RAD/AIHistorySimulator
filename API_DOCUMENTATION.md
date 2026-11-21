@@ -34,7 +34,7 @@ AIHistorySimulator 是一个基于 Vue 3 + TypeScript 构建的架空历史事�
 - **参数**: 无（使用组件内 ref 值）
 - **返回值**: void
 - **保存项**:
-  - `provider`: 模型提供商（OpenAI / DeepSeek / Qwen / Anthropic）
+  - `provider`: 模型提供商（OpenAI / DeepSeek / Qwen / Anthropic / OpenCode Go）
   - `api`: API 密钥
   - `model`: 选中的模型名称
 
@@ -65,7 +65,7 @@ AIHistorySimulator 是一个基于 Vue 3 + TypeScript 构建的架空历史事�
 
 ```typescript
 interface AiSettings {
-  provider: 'OpenAI' | 'DeepSeek' | 'Qwen' | 'Anthropic'
+  provider: 'OpenAI' | 'DeepSeek' | 'Qwen' | 'Anthropic' | 'OpenCode Go'
   api: string
   model: string
 }
@@ -78,6 +78,8 @@ OpenAI: gpt-4.1-mini, gpt-4.1, gpt-4o-mini
 DeepSeek: deepseek-chat, deepseek-reasoner, deepseek-v4-flash, deepseek-v4-pro
 Qwen: qwen-plus, qwen-max, qwen-turbo
 Anthropic: claude-3-5-sonnet-latest, claude-3-5-haiku-latest
+OpenCode Go: deepseek-v4.1-flash, deepseek-v4-pro, glm-5.3, glm-5.3-flash, kimi-k3,
+             kimi-k2.7-code, qwen3.8-max, qwen3.8-flash, minimax-m3.1-flash, hy4
 ```
 
 ---
@@ -320,7 +322,12 @@ interface RgbColor {
 #### 主要功能
 
 - 剧本 JSON 导入/导出与本地自动保存（`scenario-editor-draft`）
+- 政权列表默认按拼音排序，可切换为创建顺序；排序只影响列表显示，不改变数组/导出顺序
 - 新建/复制/删除政权；代表色支持取色器、预设与 `#RRGGBB` 文本
+- 「政权设定」顶部提供「玩家操控国家」复选框，勾选写入 `AI控制: false`，不勾选为 `AI控制: true`；
+  新建政权默认由 AI 操控，政权列表与统计栏会标记玩家政权
+- 「发送至 AI」按钮：把当前剧本（`serializeScenarioForExport` 的结果）作为 JSON 上下文发给设置页配置的模型，
+  使用 `defaultScenarioReviewPrompt` 审校剧本并给出开局推演，回复直接显示在页面顶部（可复制 / 收起）
 - 政体建议下拉 + 自定义输入
 - 领导人列表（姓名 / 职位 / 简介，支持上下移动）
 - 初始国家力量三维度滑块（-100 ~ 100），同步写入 `国家指标`
@@ -377,6 +384,13 @@ interface RegimeData extends CountryData {
 
 文章转 JSON 页面校验通过后可点击「发送至剧本」，把 `CountryData` 写入 `scenario-editor-import` 并跳转；
 剧本编辑页会在已有剧本中追加为新政权，空剧本时直接载入。
+
+#### 与 AI 的衔接
+
+「发送至 AI」使用 `readAiSettingsFromStorage()` 读取设置页的提供商 / API / 模型，
+把 `serializeScenarioForExport(scenario)` 的 JSON 交给 `submitPreparedPrompt()`，
+系统提示词为 `defaultScenarioReviewPrompt`。回复只保存在页面状态中，不写入草稿或剧本 JSON；
+切换 / 新建 / 导入剧本时会清空旧回复，避免把上一次的审校结果当成当前剧本的结论。
 
 ---
 
@@ -550,14 +564,29 @@ interface UseAiSettingsReturn {
 #### 提供商和模型支持
 
 ```typescript
-const providerOptions = ['OpenAI', 'DeepSeek', 'Qwen', 'Anthropic'] as const
+const providerOptions = ['OpenAI', 'DeepSeek', 'Qwen', 'Anthropic', 'OpenCode Go'] as const
 
 const modelOptionsMap = {
   OpenAI: ['gpt-4.1-mini', 'gpt-4.1', 'gpt-4o-mini'],
   DeepSeek: ['deepseek-chat', 'deepseek-reasoner', 'deepseek-v4-flash', 'deepseek-v4-pro'],
   Qwen: ['qwen-plus', 'qwen-max', 'qwen-turbo'],
   Anthropic: ['claude-3-5-sonnet-latest', 'claude-3-5-haiku-latest'],
+  'OpenCode Go': [
+    'deepseek-v4.1-flash',
+    'deepseek-v4-pro',
+    'glm-5.3',
+    'glm-5.3-flash',
+    'kimi-k3',
+    'kimi-k2.7-code',
+    'qwen3.8-max',
+    'qwen3.8-flash',
+    'minimax-m3.1-flash',
+    'hy4',
+  ],
 }
+
+// OpenCode Go 的 OpenAI 兼容网关（官方文档：https://opencode.ai/docs/console/go）
+const openCodeGoBaseUrl = 'https://opencode.ai/inference/go/openai/v1'
 ```
 
 #### 存储键
@@ -583,6 +612,14 @@ const modelOptionsMap = {
   - 指令类型：时间推进、事件触发、故事发展、讲述故事、提问
   - 核心约束：连贯性、合理性、无自相矛盾
   - 内容长度限制：故事 ≤500字，单国描述 ≤100字
+
+#### `defaultScenarioReviewPrompt`
+- **类型**: string 常量
+- **用途**: 剧本编辑页「发送至 AI」的系统提示词模板
+- **内容**:
+  - 说明剧本 JSON 结构与 `AI控制` 的含义
+  - 要求按「开局概览 → 阻断问题 → 数据一致性 → 历史与逻辑合理性 → 改进建议 → 开局推演」输出
+  - 只依据收到的 JSON 分析，缺失信息标记为「未填写」
 
 ---
 
@@ -637,6 +674,15 @@ function formatTimezoneLabel(tz: number): string  // 格式化时区为可读文
 - 端点: `https://api.deepseek.com/chat/completions`
 - 兼容 OpenAI API 格式
 - 支持 SDK 和 REST 两种方式
+
+**OpenCode Go**
+- 网关: `https://opencode.ai/inference/go`（Go 订阅专属，OpenAI 兼容）
+- 端点: `https://opencode.ai/inference/go/openai/v1/chat/completions`
+- 请求头额外携带 `x-opencode-session`（按浏览器标签页生成，存于 `sessionStorage` 的
+  `opencode-go-session-id`），便于网关路由与提示词缓存
+- API Key 在 [OpenCode Console](https://opencode.ai/console) 创建，形如 `oc_sk_...`
+- 支持 SDK 和 REST 两种方式；模型列表可用 `GET https://opencode.ai/inference/go/v1/models` 查询
+- 与应用内其它提供商一样由浏览器直接请求，需要网关允许跨域（CORS）；被拦截时会提示发送失败
 
 **响应解析**
 - 支持 `choices[].message.content` (OpenAI/DeepSeek 格式)

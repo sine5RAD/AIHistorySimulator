@@ -1,6 +1,34 @@
 import type { AiSettings } from '@/composables/ai-settings'
-import { aiSettingsStorageKey } from '@/composables/ai-settings'
+import { aiSettingsStorageKey, openCodeGoBaseUrl } from '@/composables/ai-settings'
 import type { PreparedPrompt } from '@/utils/preloadPrompt'
+
+/** OpenCode Go 要求每个会话带稳定的 `x-opencode-session`，这里按浏览器标签页复用。 */
+const openCodeSessionStorageKey = 'opencode-go-session-id'
+
+const createOpenCodeSessionId = (): string => {
+  if (typeof window.crypto?.randomUUID === 'function') {
+    return `ses_${window.crypto.randomUUID()}`
+  }
+
+  return `ses_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`
+}
+
+const getOpenCodeSessionId = (): string => {
+  try {
+    const cachedSessionId = window.sessionStorage.getItem(openCodeSessionStorageKey)
+
+    if (cachedSessionId) {
+      return cachedSessionId
+    }
+
+    const nextSessionId = createOpenCodeSessionId()
+    window.sessionStorage.setItem(openCodeSessionStorageKey, nextSessionId)
+    return nextSessionId
+  } catch (error) {
+    console.error('Failed to read OpenCode session id', error)
+    return createOpenCodeSessionId()
+  }
+}
 
 export function readAiSettingsFromStorage(): AiSettings | null {
   try {
@@ -31,7 +59,7 @@ export function readAiSettingsFromStorage(): AiSettings | null {
 
 /**
  * 将已准备好的提示词提交到模型提供商并返回模型回复文本（首选选择）。
- * 目前实现：OpenAI Chat Completions via REST fetch。
+ * 目前实现：OpenAI / DeepSeek / OpenCode Go 的 OpenAI 兼容 Chat Completions 接口。
  */
 export async function submitPreparedPrompt(prepared: PreparedPrompt): Promise<string | null> {
   // 先从本地存储读取用户的 AI 配置，便于在未显式传入 provider/model 时回退使用。
@@ -90,7 +118,10 @@ export async function submitPreparedPrompt(prepared: PreparedPrompt): Promise<st
   }
 
   // 尝试通过 OpenAI 兼容 SDK 调用模型；baseURL 可用于切换到兼容服务商。
-  const callOpenAiCompatibleSdk = async (baseURL?: string) => {
+  const callOpenAiCompatibleSdk = async (
+    baseURL?: string,
+    defaultHeaders?: Record<string, string>,
+  ) => {
     // 动态导入 openai，避免在不需要时把它固化到首屏依赖中。
     const mod = await import('openai')
 
@@ -106,7 +137,12 @@ export async function submitPreparedPrompt(prepared: PreparedPrompt): Promise<st
     }
 
     // 根据是否传入 baseURL 决定是否连接到兼容服务商。
-    const client = baseURL ? new OpenAI({ baseURL, apiKey }) : new OpenAI({ apiKey })
+    const clientOptions = {
+      apiKey,
+      ...(baseURL ? { baseURL } : {}),
+      ...(defaultHeaders ? { defaultHeaders } : {}),
+    }
+    const client = new OpenAI(clientOptions)
 
     // 使用 Chat Completions 接口提交准备好的消息。
     const completion = await client.chat.completions.create({
@@ -213,6 +249,54 @@ export async function submitPreparedPrompt(prepared: PreparedPrompt): Promise<st
     } catch (e) {
       // 任何请求失败都在这里收敛，避免向上抛出未处理异常。
       console.error('Failed to call DeepSeek', e)
+      return null
+    }
+  }
+
+  // OpenCode Go 分支：Go 订阅统一走 opencode.ai 网关，接口与 OpenAI Chat Completions 兼容。
+  if (provider === 'OpenCode Go') {
+    if (!apiKey) {
+      console.error('No API key available for OpenCode Go')
+      return null
+    }
+
+    // Go 建议每次请求携带稳定的会话 ID，便于网关路由与提示词缓存。
+    const sessionHeaders = { 'x-opencode-session': getOpenCodeSessionId() }
+
+    // 优先尝试 OpenAI 官方 SDK（Go 网关兼容 OpenAI 格式）。
+    try {
+      const sdkResult = await callOpenAiCompatibleSdk(openCodeGoBaseUrl, sessionHeaders)
+
+      if (typeof sdkResult === 'string' && sdkResult.length > 0) {
+        return sdkResult
+      }
+    } catch (err) {
+      console.debug('OpenAI SDK not available for OpenCode Go, using fetch fallback', err)
+    }
+
+    const endpoint = `${openCodeGoBaseUrl}/chat/completions`
+
+    try {
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+          ...sessionHeaders,
+        },
+        body: JSON.stringify({ model, messages: prepared.messages }),
+      })
+
+      if (!res.ok) {
+        const text = await res.text()
+        console.error('OpenCode Go API error', res.status, text)
+        return null
+      }
+
+      const data = await res.json()
+      return extractCompletionText(data)
+    } catch (err) {
+      console.error('Failed to call OpenCode Go', err)
       return null
     }
   }

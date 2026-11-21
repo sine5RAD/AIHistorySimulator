@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { createEmptyRegimeData } from '@/types/scenario'
 import {
   applyCountryArchive,
+  createNextRegime,
   createRegimeColor,
   createScenarioFromWorldData,
   normalizeHexColor,
@@ -364,5 +365,32 @@ describe('serialize / applyCountryArchive / toCountryData', () => {
     expect('领导人' in country).toBe(false)
     expect('领土' in country).toBe(false)
     expect('初始国家力量' in country).toBe(false)
+  })
+})
+
+describe('AI控制（玩家操控标记）', () => {
+  it('导出剧本时保留 AI控制，重新导入后不变', () => {
+    const scenario = normalizeScenarioData({
+      剧本名称: '控制方式',
+      开局时间: '2000-01-01T00:00',
+      存在国家: [
+        { 国家名称: '玩家国', AI控制: false },
+        { 国家名称: 'AI国', AI控制: true },
+      ],
+    })
+
+    const exported = serializeScenarioForExport(scenario)
+
+    expect(exported.存在国家[0]?.AI控制).toBe(false)
+    expect(exported.存在国家[1]?.AI控制).toBe(true)
+
+    const restored = normalizeScenarioData(JSON.parse(JSON.stringify(exported)))
+    expect(restored.存在国家[0]?.AI控制).toBe(false)
+    expect(restored.存在国家[1]?.AI控制).toBe(true)
+  })
+
+  it('新建政权默认由 AI 操控', () => {
+    expect(createNextRegime(0).AI控制).toBe(true)
+    expect(createNextRegime(3).AI控制).toBe(true)
   })
 })

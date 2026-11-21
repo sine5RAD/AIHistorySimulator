@@ -662,10 +662,14 @@ export function applyCountryArchive(regime: RegimeData, archive: unknown): Regim
 
 /**
  * 新建政权的默认值，放在这里方便页面和测试共用。
+ *
+ * 剧本默认是「AI 推演所有政权」，玩家需要在政权设定里主动勾选「玩家操控国家」
+ * 才会把 `AI控制` 置为 false；这样新建几十个政权时不会全部变成玩家操控。
  */
 export const createNextRegime = (index: number, color?: string): RegimeData => {
   const regime = createEmptyRegimeData(color ?? createRegimeColor(index))
   regime.国家名称 = `新政权 ${index + 1}`
+  regime.AI控制 = true
   return regime
 }
 

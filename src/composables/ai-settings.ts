@@ -2,15 +2,36 @@ import { computed, onMounted, ref, watch } from 'vue'
 
 export const aiSettingsStorageKey = 'ai-settings'
 
-export const providerOptions = ['OpenAI', 'DeepSeek', 'Qwen', 'Anthropic'] as const
+export const providerOptions = ['OpenAI', 'DeepSeek', 'Qwen', 'Anthropic', 'OpenCode Go'] as const
 
 export type Provider = (typeof providerOptions)[number]
+
+/**
+ * OpenCode Go 订阅的 OpenAI 兼容网关。
+ *
+ * 官方文档：Go 订阅统一走 `https://opencode.ai/inference/go`，
+ * Chat Completions 路径为 `/openai/v1/chat/completions`；
+ * 模型 ID 以 `GET https://opencode.ai/inference/go/v1/models` 返回值为准。
+ */
+export const openCodeGoBaseUrl = 'https://opencode.ai/inference/go/openai/v1'
 
 export const modelOptionsMap: Record<Provider, string[]> = {
   OpenAI: ['gpt-4.1-mini', 'gpt-4.1', 'gpt-4o-mini'],
   DeepSeek: ['deepseek-chat', 'deepseek-reasoner', 'deepseek-v4-flash', 'deepseek-v4-pro'],
   Qwen: ['qwen-plus', 'qwen-max', 'qwen-turbo'],
   Anthropic: ['claude-3-5-sonnet-latest', 'claude-3-5-haiku-latest'],
+  'OpenCode Go': [
+    'deepseek-v4.1-flash',
+    'deepseek-v4-pro',
+    'glm-5.3',
+    'glm-5.3-flash',
+    'kimi-k3',
+    'kimi-k2.7-code',
+    'qwen3.8-max',
+    'qwen3.8-flash',
+    'minimax-m3.1-flash',
+    'hy4',
+  ],
 }
 
 export function useAiSettings() {
