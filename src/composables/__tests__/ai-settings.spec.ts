@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import { modelOptionsMap, openCodeGoBaseUrl, providerOptions } from '../ai-settings'
+import {
+  modelOptionsMap,
+  openCodeGoBaseUrl,
+  openCodeGoRequestBaseUrl,
+  providerOptions,
+} from '../ai-settings'
 
 describe('ai-settings 提供商配置', () => {
   it('OpenCode Go 在提供商列表里，并带有可用模型', () => {
@@ -17,5 +22,9 @@ describe('ai-settings 提供商配置', () => {
 
   it('OpenCode Go 使用 Go 网关的 OpenAI 兼容路径', () => {
     expect(openCodeGoBaseUrl).toBe('https://opencode.ai/inference/go/openai/v1')
+  })
+
+  it('浏览器默认走同源 /api/opencode-go 代理，避免 CORS', () => {
+    expect(openCodeGoRequestBaseUrl).toContain('/api/opencode-go')
   })
 })

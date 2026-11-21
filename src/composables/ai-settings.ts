@@ -15,6 +15,26 @@ export type Provider = (typeof providerOptions)[number]
  */
 export const openCodeGoBaseUrl = 'https://opencode.ai/inference/go/openai/v1'
 
+/**
+ * 浏览器不能直接请求 opencode.ai（会被 CORS 拦截），
+ * 因此默认走同源路径 `/api/opencode-go`，由 Vite 开发/预览服务器或生产反向代理转发。
+ */
+export const openCodeGoProxyPath = '/api/opencode-go'
+
+export const openCodeGoRequestBaseUrl = (() => {
+  const configured = import.meta.env.VITE_OPENCODE_GO_BASE_URL
+
+  if (typeof configured === 'string' && configured.trim()) {
+    return configured.trim()
+  }
+
+  if (typeof window !== 'undefined') {
+    return `${window.location.origin}${openCodeGoProxyPath}`
+  }
+
+  return openCodeGoBaseUrl
+})()
+
 export const modelOptionsMap: Record<Provider, string[]> = {
   OpenAI: ['gpt-4.1-mini', 'gpt-4.1', 'gpt-4o-mini'],
   DeepSeek: ['deepseek-chat', 'deepseek-reasoner', 'deepseek-v4-flash', 'deepseek-v4-pro'],

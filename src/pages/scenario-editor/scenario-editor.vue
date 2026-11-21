@@ -8,7 +8,12 @@ import {
 } from '@/composables/territory-map'
 import { defaultScenarioReviewPrompt } from '@/composables/prompt-defaults'
 import { readAiSettingsFromStorage, submitPreparedPrompt } from '@/utils/submit-commition'
-import { getFeatureTerritoryCode, normalizeTerritoryCode } from '@/lib/map/territory-code'
+import {
+  getFeatureTerritoryCode,
+  getFeatureTerritoryKey,
+  makeTerritoryKey,
+  normalizeTerritoryCode,
+} from '@/lib/map/territory-code'
 import type { WorldMapFeature } from '@/types/geo'
 import type { RegimeData, ScenarioData, TerritoryData, TerritoryLevel } from '@/types/scenario'
 import {
@@ -29,6 +34,7 @@ import {
   normalizeRegimeData,
   normalizeScenarioData,
   pickUnusedRegimeColor,
+  getTerritoryKey,
   safeFileName,
   serializeRegimeForExport,
   serializeScenarioForExport,
@@ -36,6 +42,7 @@ import {
   toCountryData,
 } from '@/utils/scenario-data'
 import { buildIndexedRegimes, type RegimeSortMode } from '@/utils/regime-sort'
+import { buildScenarioAiPayload } from '@/utils/scenario-ai'
 
 defineOptions({
   name: 'ScenarioEditorPage',
@@ -79,7 +86,12 @@ const aiReplyText = ref('')
 const aiErrorText = ref('')
 const aiModelLabel = ref('')
 const aiInputChars = ref(0)
+const aiInputTokens = ref(0)
 const aiPanelRef = ref<HTMLElement | null>(null)
+
+/** 精简审核版仍超过这个值时，直接提示分批，避免把必然超上下文的请求发出去。 */
+const MAX_AI_INPUT_TOKENS = 100_000
+const SUPPORTED_AI_PROVIDERS = new Set(['OpenAI', 'DeepSeek', 'OpenCode Go'])
 
 const scenarioFileInput = ref<HTMLInputElement | null>(null)
 const worldFileInput = ref<HTMLInputElement | null>(null)
@@ -228,7 +240,13 @@ const assignmentMap = computed<Record<string, TerritoryAssignment>>(() => {
         continue
       }
 
-      assignments[code] = {
+      const key = getTerritoryKey(territory)
+      if (!key) {
+        continue
+      }
+
+      assignments[key] = {
+        key,
         code,
         name: territory.名称 || code,
         color: toColorInputValue(regime.代表色),
@@ -252,6 +270,12 @@ const currentTerritoryCodes = computed(() =>
   currentRegime.value.领土
     .map((territory) => normalizeTerritoryCode(territory.代码 ?? ''))
     .filter((code) => code.length > 0),
+)
+
+const currentTerritoryKeys = computed(() =>
+  currentRegime.value.领土
+    .map((territory) => getTerritoryKey(territory))
+    .filter((key) => key.length > 0),
 )
 
 const currentRegimeColor = computed(() => currentRegime.value.代表色 || DEFAULT_REGIME_COLOR)
@@ -278,7 +302,7 @@ const {
 } = useTerritoryMap({
   assignments: assignmentMap,
   areaGroups,
-  selectedCodes: currentTerritoryCodes,
+  selectedKeys: currentTerritoryKeys,
   currentColor: currentRegimeColor,
   onToggle: (feature) => toggleTerritory(feature),
 })
@@ -447,6 +471,7 @@ const resetAiReview = () => {
   aiErrorText.value = ''
   aiModelLabel.value = ''
   aiInputChars.value = 0
+  aiInputTokens.value = 0
 }
 
 const sendScenarioToAi = async () => {
@@ -466,32 +491,56 @@ const sendScenarioToAi = async () => {
     return
   }
 
-  const scenarioJson = scenarioExportText.value
-  const requestId = (aiRequestId += 1)
+  if (!SUPPORTED_AI_PROVIDERS.has(settings.provider)) {
+    showMessage(
+      `当前提供商「${settings.provider}」尚未接入。请在设置页改用 OpenAI / DeepSeek / OpenCode Go。`,
+      'error',
+    )
+    return
+  }
+
+  // 完整剧本 JSON 可能超过模型上下文，这里始终发送精简审核版。
+  const payload = buildScenarioAiPayload(scenario.value)
 
   aiModelLabel.value = `${settings.provider} / ${settings.model}`
-  aiInputChars.value = scenarioJson.length
+  aiInputChars.value = payload.chars
+  aiInputTokens.value = payload.tokens
   aiReplyText.value = ''
   aiErrorText.value = ''
   aiPanelOpen.value = true
+
+  if (payload.tokens > MAX_AI_INPUT_TOKENS) {
+    aiErrorText.value = `精简审核版仍约 ${payload.tokens.toLocaleString()} tokens，超过安全上限 ${MAX_AI_INPUT_TOKENS.toLocaleString()}。请减少剧本内容或分批分析。`
+    return
+  }
+
+  const requestId = (aiRequestId += 1)
   isSendingToAi.value = true
+  const errorDetails: string[] = []
 
   try {
-    const response = await submitPreparedPrompt({
-      messages: [
-        { role: 'system' as const, content: defaultScenarioReviewPrompt },
-        {
-          role: 'user' as const,
-          content: [
-            `下面是当前剧本 JSON（共 ${regimeCount.value} 个政权，其中玩家操控 ${playerControlledCount.value} 个），请按系统提示分析：`,
-            '',
-            '```json',
-            scenarioJson,
-            '```',
-          ].join('\n'),
+    const response = await submitPreparedPrompt(
+      {
+        messages: [
+          { role: 'system' as const, content: defaultScenarioReviewPrompt },
+          {
+            role: 'user' as const,
+            content: [
+              `下面是当前剧本的精简审核版 JSON（共 ${payload.regimeCount} 个政权、${payload.territoryCount} 块领土，约 ${payload.tokens} tokens；其中玩家操控 ${playerControlledCount.value} 个），请按系统提示分析：`,
+              '',
+              '```json',
+              payload.text,
+              '```',
+            ].join('\n'),
+          },
+        ],
+      },
+      {
+        onError: (message) => {
+          errorDetails.push(message)
         },
-      ],
-    })
+      },
+    )
 
     // 请求期间切到别的剧本时，旧结果直接丢弃。
     if (requestId !== aiRequestId) {
@@ -499,7 +548,10 @@ const sendScenarioToAi = async () => {
     }
 
     if (!response?.trim()) {
-      aiErrorText.value = '模型没有返回有效内容，请检查设置页的 API 与模型后重试。'
+      const detail = errorDetails.join('；').slice(0, 600)
+      aiErrorText.value = detail
+        ? `模型没有返回有效内容：${detail}`
+        : `模型没有返回有效内容（已发送约 ${payload.tokens.toLocaleString()} tokens）。请检查模型上下文是否足够、API Key/模型名是否正确；详细错误见浏览器控制台。`
       return
     }
 
@@ -509,7 +561,10 @@ const sendScenarioToAi = async () => {
     aiPanelRef.value?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' })
   } catch (error) {
     if (requestId === aiRequestId) {
-      aiErrorText.value = '发送失败，请检查网络或 API 配置后重试。'
+      const detail = errorDetails.join('；').slice(0, 600)
+      aiErrorText.value = detail
+        ? `发送失败：${detail}`
+        : '发送失败，请检查网络、API 与模型后重试。'
     }
     console.error('Failed to send scenario to AI', error)
   } finally {
@@ -766,14 +821,22 @@ function toggleTerritory(feature: WorldMapFeature) {
   const code = getFeatureTerritoryCode(feature)
   const countryCode = (feature.iso || '').trim().toUpperCase()
   const name = feature.name || code
+  const featureKey = getFeatureTerritoryKey(feature)
+  const legacyKey = makeTerritoryKey(code)
 
   if (!code) {
     showMessage('这个地区没有可用编号。', 'error')
     return
   }
 
+  // 同时兼容旧数据里没有国家代码、只按代码记录的领土。
+  const matchesFeature = (territory: TerritoryData) => {
+    const key = getTerritoryKey(territory)
+    return key === featureKey || key === legacyKey
+  }
+
   // 再次点击同一块地区 -> 移出当前政权
-  const ownIndex = regime.领土.findIndex((territory) => territoryCode(territory) === code)
+  const ownIndex = regime.领土.findIndex(matchesFeature)
   if (ownIndex >= 0) {
     regime.领土.splice(ownIndex, 1)
     showMessage(`已将「${name}」移出「${regime.国家名称 || '当前政权'}」。`)
@@ -786,7 +849,7 @@ function toggleTerritory(feature: WorldMapFeature) {
     if (target === regime) {
       continue
     }
-    if (removeTerritories(target, (territory) => territoryCode(territory) === code)) {
+    if (removeTerritories(target, matchesFeature)) {
       transferredFrom = target.国家名称 || '另一政权'
     }
   }
@@ -1140,7 +1203,7 @@ onBeforeUnmount(() => {
           type="button"
           class="ai-action"
           :disabled="isSendingToAi"
-          title="把当前剧本 JSON 发送到「设置」页配置的模型，并在这里显示回复"
+          title="把当前剧本的精简审核版发送到「设置」页配置的模型"
           @click="sendScenarioToAi"
         >
           {{ isSendingToAi ? 'AI 分析中…' : '发送至 AI' }}
@@ -1249,7 +1312,13 @@ onBeforeUnmount(() => {
           <p class="ai-panel-meta">
             <span>{{ aiModelLabel || '未配置模型' }}</span>
             <span>发送 {{ aiInputChars }} 字符</span>
+            <span v-if="aiInputTokens">
+              约 {{ aiInputTokens.toLocaleString() }} tokens · 精简审核版
+            </span>
             <span v-if="aiReplyText">回复 {{ aiReplyText.length }} 字符</span>
+          </p>
+          <p class="ai-panel-note">
+            为控制上下文，发送的是精简审核版：省略空字段和地区名称，领土按级别只保留编号。
           </p>
         </div>
         <div class="ai-panel-actions">
@@ -2114,6 +2183,13 @@ textarea {
   margin: 6px 0 0;
   font-size: 11px;
   opacity: 0.6;
+}
+
+.ai-panel-note {
+  margin: 6px 0 0;
+  font-size: 10.5px;
+  line-height: 1.5;
+  opacity: 0.5;
 }
 
 .ai-panel-actions {

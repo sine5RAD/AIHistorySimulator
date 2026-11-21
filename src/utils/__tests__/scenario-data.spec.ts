@@ -6,6 +6,7 @@ import {
   createNextRegime,
   createRegimeColor,
   createScenarioFromWorldData,
+  getTerritoryKey,
   normalizeHexColor,
   normalizeRegimeData,
   normalizeScenarioData,
@@ -233,6 +234,22 @@ describe('normalizeTerritoryList', () => {
       国家代码: 'CHN',
       级别: 'adm2',
     })
+  })
+
+  it('N/A 用国家代码区分，不同国家的同名编号不会互相去重', () => {
+    const regime = normalizeRegimeData({
+      国家名称: '托管地',
+      领土: [
+        { 名称: 'Abyei PCA', 代码: 'N/A', 国家代码: 'SDN', 级别: 'adm1' },
+        { 名称: 'Keserwan-Jbeil', 代码: 'N/A', 国家代码: 'LBN', 级别: 'adm1' },
+        { 名称: 'Abyei 重复条目', 代码: 'N/A', 国家代码: 'SDN', 级别: 'adm1' },
+      ],
+    })
+
+    expect(regime.领土).toHaveLength(2)
+    expect(regime.领土.map((territory) => territory.国家代码)).toEqual(['SDN', 'LBN'])
+    expect(getTerritoryKey({ 名称: 'Abyei PCA', 代码: 'N/A', 国家代码: 'SDN' })).toBe('N/A|SDN')
+    expect(getTerritoryKey({ 名称: '科索沃', 代码: 'KOS' })).toBe('KOS|KOS')
   })
 })
 

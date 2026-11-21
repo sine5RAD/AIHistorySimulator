@@ -11,7 +11,11 @@ import {
   viewBounds,
   type Camera,
 } from '@/lib/map/projection'
-import { getFeatureTerritoryCode, normalizeTerritoryCode } from '@/lib/map/territory-code'
+import {
+  getFeatureTerritoryCode,
+  getFeatureTerritoryKey,
+  normalizeTerritoryCode,
+} from '@/lib/map/territory-code'
 import {
   isRawFeatureCollection,
   normalizeWorldFeatures,
@@ -54,6 +58,7 @@ const COLOR_HOVER_STROKE = '#f8fafc'
 export type TerritoryMapLoadState = 'loading' | 'ready' | 'error'
 
 export interface TerritoryAssignment {
+  key?: string
   code: string
   name: string
   color: string
@@ -71,8 +76,8 @@ export interface TerritoryMapOptions {
   assignments: Ref<Record<string, TerritoryAssignment>>
   /** 自定义多边形领土（经纬度），来自世界生成的手绘国土 */
   areaGroups: Ref<TerritoryAreaGroup[]>
-  /** 当前政权拥有的地图编号，用白色描边突出显示 */
-  selectedCodes: Ref<string[]>
+  /** 当前政权拥有的领土唯一键（代码 + 国家），用白色描边突出显示 */
+  selectedKeys: Ref<string[]>
   /** 当前政权的代表色，供页面展示与未来扩展 */
   currentColor: Ref<string>
   /**
@@ -273,21 +278,28 @@ export function useTerritoryMap(options: TerritoryMapOptions) {
     }
   }
 
-  function findAdminFeature(rawCode: string): WorldMapFeature | null {
+  function findAdminFeature(rawCode: string, rawIso = ''): WorldMapFeature | null {
     if (!adm2Store) {
       return null
     }
 
     const code = normalizeTerritoryCode(rawCode)
+    const iso = rawIso.trim().toUpperCase()
+    let fallback: WorldMapFeature | null = null
+
     for (const chunk of adm2Store.list()) {
       for (const feature of chunk.features) {
-        if (getFeatureTerritoryCode(feature) === code) {
+        if (getFeatureTerritoryCode(feature) !== code) {
+          continue
+        }
+        if (iso && (feature.iso || '').trim().toUpperCase() === iso) {
           return feature
         }
+        fallback ??= feature
       }
     }
 
-    return null
+    return fallback
   }
 
   function pointInBounds(lng: number, lat: number, bounds: GeoFeatureBounds): boolean {
@@ -613,25 +625,73 @@ export function useTerritoryMap(options: TerritoryMapOptions) {
     context.globalAlpha = 1
   }
 
-  function drawAssignments(context: CanvasRenderingContext2D): void {
-    const current = camera()
-    const assignments = Object.values(options.assignments.value).filter(
-      (assignment) => assignment.level === 'country' || !assignment.level,
-    )
-    if (!assignments.length) {
+  type AssignmentEntry = { key: string; assignment: TerritoryAssignment }
+
+  interface AssignmentLookup {
+    byKey: Map<string, AssignmentEntry>
+    byCode: Map<string, AssignmentEntry[]>
+  }
+
+  function buildAssignmentLookup(): AssignmentLookup {
+    const byKey = new Map<string, AssignmentEntry>()
+    const byCode = new Map<string, AssignmentEntry[]>()
+
+    for (const [key, assignment] of Object.entries(options.assignments.value)) {
+      const entry = { key, assignment }
+      byKey.set(key, entry)
+
+      const code = normalizeTerritoryCode(assignment.code)
+      const entries = byCode.get(code) ?? []
+      entries.push(entry)
+      byCode.set(code, entries)
+    }
+
+    return { byKey, byCode }
+  }
+
+  /**
+   * 优先按「代码 + 国家」唯一键匹配；
+   * 旧数据没有国家代码时，如果该代码只有一个候选，退回按代码匹配。
+   */
+  function resolveAssignment(
+    feature: WorldMapFeature,
+    lookup: AssignmentLookup,
+  ): AssignmentEntry | null {
+    const key = getFeatureTerritoryKey(feature)
+    const exact = lookup.byKey.get(key)
+    if (exact) {
+      return exact
+    }
+
+    const code = normalizeTerritoryCode(getFeatureTerritoryCode(feature))
+    const candidates = lookup.byCode.get(code) ?? []
+    return candidates.length === 1 ? (candidates[0] ?? null) : null
+  }
+
+  function drawAssignments(context: CanvasRenderingContext2D, lookup: AssignmentLookup): void {
+    if (!lookup.byKey.size) {
       return
     }
 
-    const selected = new Set(options.selectedCodes.value.map(normalizeTerritoryCode))
+    const selected = new Set(options.selectedKeys.value)
+    const current = camera()
 
     for (const shift of LONGITUDE_SHIFTS) {
       const view = expandBounds(viewBounds(current, shift), 1)
       applyCameraTransform(context, shift)
 
-      for (const assignment of assignments) {
-        const code = normalizeTerritoryCode(assignment.code)
-        const feature = featureByCode.get(code)
-        if (!feature || !boundsIntersect(feature.bounds, view)) {
+      for (const feature of features) {
+        if (!boundsIntersect(feature.bounds, view)) {
+          continue
+        }
+
+        const resolved = resolveAssignment(feature, lookup)
+        if (!resolved) {
+          continue
+        }
+
+        const assignment = resolved.assignment
+        if (assignment.level && assignment.level !== 'country') {
           continue
         }
 
@@ -640,7 +700,7 @@ export function useTerritoryMap(options: TerritoryMapOptions) {
           continue
         }
 
-        const isCurrent = selected.has(code)
+        const isCurrent = selected.has(resolved.key)
         context.fillStyle = toColorInputValue(assignment.color)
         context.globalAlpha = isCurrent ? 0.72 : 0.46
         context.fill(path, 'evenodd')
@@ -692,24 +752,15 @@ export function useTerritoryMap(options: TerritoryMapOptions) {
   }
 
   /** 已分配的行政区：按政权颜色填充。 */
-  function drawRegionAssignments(context: CanvasRenderingContext2D): void {
-    if (!regionMode.value || !adm2Store) {
+  function drawRegionAssignments(
+    context: CanvasRenderingContext2D,
+    lookup: AssignmentLookup,
+  ): void {
+    if (!regionMode.value || !adm2Store || !lookup.byKey.size) {
       return
     }
 
-    const regionAssignments = new Map<string, TerritoryAssignment>()
-    for (const assignment of Object.values(options.assignments.value)) {
-      if (assignment.level === 'country') {
-        continue
-      }
-      regionAssignments.set(normalizeTerritoryCode(assignment.code), assignment)
-    }
-
-    if (!regionAssignments.size) {
-      return
-    }
-
-    const selected = new Set(options.selectedCodes.value.map(normalizeTerritoryCode))
+    const selected = new Set(options.selectedKeys.value)
     const current = camera()
 
     for (const shift of LONGITUDE_SHIFTS) {
@@ -726,9 +777,13 @@ export function useTerritoryMap(options: TerritoryMapOptions) {
             continue
           }
 
-          const code = getFeatureTerritoryCode(feature)
-          const assignment = regionAssignments.get(code)
-          if (!assignment) {
+          const resolved = resolveAssignment(feature, lookup)
+          if (!resolved) {
+            continue
+          }
+
+          const assignment = resolved.assignment
+          if (assignment.level === 'country') {
             continue
           }
 
@@ -737,7 +792,7 @@ export function useTerritoryMap(options: TerritoryMapOptions) {
             continue
           }
 
-          const isCurrent = selected.has(code)
+          const isCurrent = selected.has(resolved.key)
           context.fillStyle = toColorInputValue(assignment.color)
           context.globalAlpha = isCurrent ? 0.72 : 0.46
           context.fill(path, 'evenodd')
@@ -800,10 +855,11 @@ export function useTerritoryMap(options: TerritoryMapOptions) {
       return
     }
 
+    const assignmentLookup = buildAssignmentLookup()
     drawBaseFeatures(context)
-    drawAssignments(context)
+    drawAssignments(context, assignmentLookup)
     drawAdmin2Base(context)
-    drawRegionAssignments(context)
+    drawRegionAssignments(context, assignmentLookup)
     drawAreaGroups(context)
     drawHover(context)
 
@@ -1102,7 +1158,7 @@ export function useTerritoryMap(options: TerritoryMapOptions) {
       return true
     }
 
-    const adminFeature = findAdminFeature(rawCode)
+    const adminFeature = findAdminFeature(rawCode, rawCountryCode)
     if (adminFeature) {
       focusFeature(adminFeature)
       return true
@@ -1171,7 +1227,7 @@ export function useTerritoryMap(options: TerritoryMapOptions) {
   )
 
   watch(
-    [options.assignments, options.areaGroups, options.selectedCodes, options.currentColor],
+    [options.assignments, options.areaGroups, options.selectedKeys, options.currentColor],
     () => scheduleRender(),
     { deep: true },
   )

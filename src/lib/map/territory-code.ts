@@ -4,6 +4,15 @@ import type { WorldMapFeature } from '@/types/geo'
 export const normalizeTerritoryCode = (value: string): string => value.trim().toUpperCase()
 
 /**
+ * 领土唯一键：代码 + 所属国家。
+ *
+ * 地图源数据里存在 N/A 这类非唯一代码（Abyei 与 Keserwan-Jbeil），
+ * 只按代码匹配会串到同一块领土，因此应用层统一使用该组合键。
+ */
+export const makeTerritoryKey = (code: string, countryCode = ''): string =>
+  `${normalizeTerritoryCode(code)}|${countryCode.trim().toUpperCase()}`
+
+/**
  * 计算地图要素对应的领土编号。
  *
  * - 国家使用 ISO3；
@@ -36,4 +45,12 @@ export function getFeatureTerritoryCode(feature: WorldMapFeature): string {
   }
 
   return normalizeTerritoryCode(code || feature.id)
+}
+
+/** 地图要素的唯一键，与剧本领土的 `getTerritoryKey` 对应。 */
+export function getFeatureTerritoryKey(feature: WorldMapFeature): string {
+  const code = getFeatureTerritoryCode(feature)
+  const iso = (feature.iso || '').trim().toUpperCase()
+  const inferredCountry = iso || (/^[A-Z]{3}$/.test(code) ? code : '')
+  return makeTerritoryKey(code, inferredCountry)
 }

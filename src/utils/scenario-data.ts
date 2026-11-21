@@ -13,7 +13,7 @@ import {
   createEmptyScenarioData,
   formatDateTimeLocal,
 } from '@/types/scenario'
-import { normalizeTerritoryCode } from '@/lib/map/territory-code'
+import { makeTerritoryKey, normalizeTerritoryCode } from '@/lib/map/territory-code'
 import { isRecord, normalizeCountryData, normalizeCountryIndicators } from './country-data'
 
 const text = (value: unknown): string => (typeof value === 'string' ? value : '')
@@ -368,6 +368,23 @@ export function normalizeTerritoryList(value: unknown): TerritoryData[] {
 }
 
 /**
+ * 剧本领土的唯一键：代码 + 所属国家。
+ *
+ * 整国编号（3 个字母）在缺省 `国家代码` 时用自身推断；
+ * 这样 KOS / MNE / CYN 等地图国家要素仍能与地图要素键对应。
+ */
+export const getTerritoryKey = (territory: TerritoryData): string => {
+  const code = normalizeTerritoryCode(territory.代码 ?? '')
+  if (!code) {
+    return ''
+  }
+
+  const explicitCountry = (territory.国家代码 ?? '').trim().toUpperCase()
+  const inferredCountry = explicitCountry || (/^[A-Z]{3}$/.test(code) ? code : '')
+  return makeTerritoryKey(code, inferredCountry)
+}
+
+/**
  * 把任意 JSON 归一化成合法政权。
  *
  * 兼容三种输入：
@@ -401,17 +418,17 @@ export function normalizeRegimeData(value: unknown, index = 0): RegimeData {
     }
   }
 
-  // 同一个地区编号只保留一条，避免地图上同一块领土被重复分配。
-  const seenCodes = new Set<string>()
+  // 同一个「代码 + 国家」只保留一条；N/A 这类源数据重复编号靠国家代码区分。
+  const seenKeys = new Set<string>()
   territories = territories.filter((territory) => {
-    const code = territory.代码 ? normalizeTerritoryCode(territory.代码) : ''
-    if (!code) {
+    const key = getTerritoryKey(territory)
+    if (!key) {
       return true
     }
-    if (seenCodes.has(code)) {
+    if (seenKeys.has(key)) {
       return false
     }
-    seenCodes.add(code)
+    seenKeys.add(key)
     return true
   })
 

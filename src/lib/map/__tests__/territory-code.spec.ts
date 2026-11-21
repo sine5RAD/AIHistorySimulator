@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
 import type { WorldMapFeature } from '@/types/geo'
-import { getFeatureTerritoryCode, normalizeTerritoryCode } from '../territory-code'
+import {
+  getFeatureTerritoryCode,
+  getFeatureTerritoryKey,
+  makeTerritoryKey,
+  normalizeTerritoryCode,
+} from '../territory-code'
 
 const makeFeature = (overrides: Partial<WorldMapFeature>): WorldMapFeature => ({
   id: 'feature',
@@ -70,5 +75,28 @@ describe('getFeatureTerritoryCode', () => {
         makeFeature({ id: 'abc123', code: 'abc123', iso: 'FRA', level: 'adm2' }),
       ),
     ).toBe('FRA:ABC123')
+  })
+})
+
+describe('getFeatureTerritoryKey', () => {
+  it('N/A 这类重复代码用国家区分', () => {
+    const abyey = makeFeature({ id: 'abyei', code: 'N/A', iso: 'SDN', level: 'adm1' })
+    const keserwan = makeFeature({ id: 'keserwan', code: 'N/A', iso: 'LBN', level: 'adm1' })
+
+    expect(getFeatureTerritoryKey(abyey)).toBe('N/A|SDN')
+    expect(getFeatureTerritoryKey(keserwan)).toBe('N/A|LBN')
+    expect(getFeatureTerritoryKey(abyey)).not.toBe(getFeatureTerritoryKey(keserwan))
+  })
+
+  it('整国代码没有国家字段时用 ISO3 自身', () => {
+    expect(
+      getFeatureTerritoryKey(
+        makeFeature({ id: 'Kosovo', code: 'KOS', iso: 'KOS', level: 'country' }),
+      ),
+    ).toBe('KOS|KOS')
+  })
+
+  it('makeTerritoryKey 统一大小写', () => {
+    expect(makeTerritoryKey(' n/a ', ' sdn ')).toBe('N/A|SDN')
   })
 })

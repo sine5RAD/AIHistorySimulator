@@ -81,9 +81,10 @@ pnpm dev
 - 填写剧本名称与开局时间
 - 新建政权，设置代表色、政体、领导人、初始国家力量
 - 在「政权设定」顶部勾选「玩家操控国家」可把该政权交给玩家：导出 JSON 时写入 `AI控制: false`；不勾选则为 AI 推演（`AI控制: true`），新建政权默认由 AI 操控
-- 右上角「发送至 AI」把当前剧本 JSON 发送到设置页配置的模型做审校与开局推演，回复显示在页面顶部，可复制或收起
+- 右上角「发送至 AI」发送的是**精简审核版**（省略空字段和地区名称，80 政权约 4 万 tokens），避免完整 JSON 超出模型上下文；回复显示在页面顶部，可复制或收起。当前接入 OpenAI / DeepSeek / OpenCode Go，API 错误会显示具体原因
 - 政权列表默认按拼音排序，可切换为创建顺序；只影响列表显示，导出 JSON 仍按原数组顺序
 - 领土只能在「地区」粒度添加：地图放大到 2.4 倍后会自动加载并显示下级行政区，点击单个行政区即可划入或移出，文件里记录地区编号（如 `DE-BY`、`110000`）
+- 领土以「代码 + 国家代码」唯一标识；源数据里的 `N/A` 等重复编号（Abyei / Keserwan-Jbeil）不会串到同一块图
 - 地图最高可放大到 200×，右下角提供 `+ / − / 重置`，小地块也能点中
 - 从导入数据继承的整国编号（ISO3）领土仍会显示在列表和地图上，可单独删除，但不能再通过地图新增
 - 也可以从世界生成草稿导入手绘国土
@@ -109,6 +110,27 @@ pnpm dev
 - 地图数据缺失时会退回公网地址，并提示如何离线生成（见 [public/geo/README.md](public/geo/README.md)）
 
 ## 部署方式
+
+### OpenCode Go 代理
+
+OpenCode Go 要求请求携带 `x-opencode-session` 等自定义头，浏览器直连会因 CORS 预检被拒绝，
+表现为 `NetworkError when attempting to fetch resource`。项目默认走同源路径 `/api/opencode-go`：
+
+- `pnpm dev` / `pnpm preview`：Vite 自动把 `/api/opencode-go` 代理到
+  `https://opencode.ai/inference/go/openai/v1`；
+- 静态部署：需要在同域配置反向代理，例如 Nginx：
+
+```nginx
+location /api/opencode-go/ {
+    proxy_pass https://opencode.ai/inference/go/openai/v1/;
+    proxy_set_header Host opencode.ai;
+    proxy_http_version 1.1;
+    proxy_read_timeout 300s;
+    proxy_send_timeout 300s;
+}
+```
+
+也可以把 `VITE_OPENCODE_GO_BASE_URL` 设为自有代理的完整地址，重新构建后再使用。
 
 ### 方式一：构建后本机预览
 

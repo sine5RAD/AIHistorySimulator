@@ -1,5 +1,5 @@
 import type { AiSettings } from '@/composables/ai-settings'
-import { aiSettingsStorageKey, openCodeGoBaseUrl } from '@/composables/ai-settings'
+import { aiSettingsStorageKey, openCodeGoRequestBaseUrl } from '@/composables/ai-settings'
 import type { PreparedPrompt } from '@/utils/preloadPrompt'
 
 /** OpenCode Go 要求每个会话带稳定的 `x-opencode-session`，这里按浏览器标签页复用。 */
@@ -57,11 +57,27 @@ export function readAiSettingsFromStorage(): AiSettings | null {
   }
 }
 
+export interface SubmitPreparedPromptOptions {
+  /** 请求失败时把真实原因（HTTP 状态、服务端错误文本等）回传给调用方 */
+  onError?: (message: string) => void
+}
+
 /**
  * 将已准备好的提示词提交到模型提供商并返回模型回复文本（首选选择）。
  * 目前实现：OpenAI / DeepSeek / OpenCode Go 的 OpenAI 兼容 Chat Completions 接口。
  */
-export async function submitPreparedPrompt(prepared: PreparedPrompt): Promise<string | null> {
+export async function submitPreparedPrompt(
+  prepared: PreparedPrompt,
+  options: SubmitPreparedPromptOptions = {},
+): Promise<string | null> {
+  const reportError = (message: string) => {
+    console.error(message)
+    options.onError?.(message)
+  }
+
+  const isNetworkError = (message: string) =>
+    /NetworkError|Failed to fetch|fetch failed|Load failed|Network request failed/i.test(message)
+
   // 先从本地存储读取用户的 AI 配置，便于在未显式传入 provider/model 时回退使用。
   const settings = readAiSettingsFromStorage()
 
@@ -139,6 +155,8 @@ export async function submitPreparedPrompt(prepared: PreparedPrompt): Promise<st
     // 根据是否传入 baseURL 决定是否连接到兼容服务商。
     const clientOptions = {
       apiKey,
+      // 本项目是本地浏览器工具，API Key 本来就保存在 localStorage，这里显式允许浏览器调用。
+      dangerouslyAllowBrowser: true,
       ...(baseURL ? { baseURL } : {}),
       ...(defaultHeaders ? { defaultHeaders } : {}),
     }
@@ -159,13 +177,16 @@ export async function submitPreparedPrompt(prepared: PreparedPrompt): Promise<st
   if (provider === 'OpenAI') {
     // 没有 API Key 时无法请求 OpenAI，直接返回 null 并输出错误。
     if (!apiKey) {
-      console.error('No API key available for OpenAI')
+      reportError('没有可用的 OpenAI API Key')
       return null
     }
 
     // 先走 SDK，若环境或依赖不满足则回退到 fetch。
     try {
-      return await callOpenAiCompatibleSdk()
+      const sdkResult = await callOpenAiCompatibleSdk()
+      if (typeof sdkResult === 'string' && sdkResult.trim().length > 0) {
+        return sdkResult
+      }
     } catch (err) {
       // SDK 失败并不一定是致命错误，继续尝试 REST 方式。
       console.warn('OpenAI SDK call failed, falling back to REST fetch', err)
@@ -185,16 +206,28 @@ export async function submitPreparedPrompt(prepared: PreparedPrompt): Promise<st
       // HTTP 状态不成功时，读取错误文本并记录日志后返回 null。
       if (!res.ok) {
         const text = await res.text()
-        console.error('OpenAI API error', res.status, text)
+        reportError(`OpenAI API 错误 ${res.status}：${text.slice(0, 500)}`)
         return null
       }
 
       // 成功时解析 JSON 并统一抽取文本内容。
       const data = await res.json()
-      return extractCompletionText(data)
+      const result = extractCompletionText(data)
+      if (!result?.trim()) {
+        reportError('OpenAI 返回了空内容')
+        return null
+      }
+      return result
     } catch (err) {
       // 网络异常、跨域问题或响应解析错误都会走到这里。
-      console.error('Failed to call OpenAI', err)
+      const message = err instanceof Error ? err.message : String(err)
+      reportError(
+        `OpenAI 请求失败：${message}${
+          isNetworkError(message)
+            ? '（浏览器直连可能被 CORS 拦截；建议改用 OpenCode Go 或本地代理）'
+            : ''
+        }`,
+      )
       return null
     }
   }
@@ -204,7 +237,7 @@ export async function submitPreparedPrompt(prepared: PreparedPrompt): Promise<st
     // DeepSeek REST Chat endpoint (assumed). Uses Bearer token in Authorization header.
     // 没有 API Key 时无法请求 DeepSeek，直接返回 null。
     if (!apiKey) {
-      console.error('No API key available for DeepSeek')
+      reportError('没有可用的 DeepSeek API Key')
       return null
     }
 
@@ -214,7 +247,7 @@ export async function submitPreparedPrompt(prepared: PreparedPrompt): Promise<st
       const sdkResult = await callOpenAiCompatibleSdk('https://api.deepseek.com')
 
       // 如果 SDK 成功返回了非空字符串，直接作为最终结果。
-      if (typeof sdkResult === 'string' && sdkResult.length > 0) {
+      if (typeof sdkResult === 'string' && sdkResult.trim().length > 0) {
         return sdkResult
       }
     } catch (err) {
@@ -239,16 +272,28 @@ export async function submitPreparedPrompt(prepared: PreparedPrompt): Promise<st
       // 非成功响应时读取服务端错误信息并返回 null。
       if (!res.ok) {
         const text = await res.text()
-        console.error('DeepSeek API error', res.status, text)
+        reportError(`DeepSeek API 错误 ${res.status}：${text.slice(0, 500)}`)
         return null
       }
 
       // 正常返回时解析 JSON 并抽取统一文本结果。
       const data = await res.json()
-      return extractCompletionText(data)
+      const result = extractCompletionText(data)
+      if (!result?.trim()) {
+        reportError('DeepSeek 返回了空内容')
+        return null
+      }
+      return result
     } catch (e) {
       // 任何请求失败都在这里收敛，避免向上抛出未处理异常。
-      console.error('Failed to call DeepSeek', e)
+      const message = e instanceof Error ? e.message : String(e)
+      reportError(
+        `DeepSeek 请求失败：${message}${
+          isNetworkError(message)
+            ? '（浏览器直连可能被 CORS 拦截；建议改用 OpenCode Go 或本地代理）'
+            : ''
+        }`,
+      )
       return null
     }
   }
@@ -256,7 +301,7 @@ export async function submitPreparedPrompt(prepared: PreparedPrompt): Promise<st
   // OpenCode Go 分支：Go 订阅统一走 opencode.ai 网关，接口与 OpenAI Chat Completions 兼容。
   if (provider === 'OpenCode Go') {
     if (!apiKey) {
-      console.error('No API key available for OpenCode Go')
+      reportError('没有可用的 OpenCode Go API Key')
       return null
     }
 
@@ -265,16 +310,16 @@ export async function submitPreparedPrompt(prepared: PreparedPrompt): Promise<st
 
     // 优先尝试 OpenAI 官方 SDK（Go 网关兼容 OpenAI 格式）。
     try {
-      const sdkResult = await callOpenAiCompatibleSdk(openCodeGoBaseUrl, sessionHeaders)
+      const sdkResult = await callOpenAiCompatibleSdk(openCodeGoRequestBaseUrl, sessionHeaders)
 
-      if (typeof sdkResult === 'string' && sdkResult.length > 0) {
+      if (typeof sdkResult === 'string' && sdkResult.trim().length > 0) {
         return sdkResult
       }
     } catch (err) {
       console.debug('OpenAI SDK not available for OpenCode Go, using fetch fallback', err)
     }
 
-    const endpoint = `${openCodeGoBaseUrl}/chat/completions`
+    const endpoint = `${openCodeGoRequestBaseUrl}/chat/completions`
 
     try {
       const res = await fetch(endpoint, {
@@ -289,19 +334,31 @@ export async function submitPreparedPrompt(prepared: PreparedPrompt): Promise<st
 
       if (!res.ok) {
         const text = await res.text()
-        console.error('OpenCode Go API error', res.status, text)
+        reportError(`OpenCode Go API 错误 ${res.status}：${text.slice(0, 500)}`)
         return null
       }
 
       const data = await res.json()
-      return extractCompletionText(data)
+      const result = extractCompletionText(data)
+      if (!result?.trim()) {
+        reportError('OpenCode Go 返回了空内容')
+        return null
+      }
+      return result
     } catch (err) {
-      console.error('Failed to call OpenCode Go', err)
+      const message = err instanceof Error ? err.message : String(err)
+      reportError(
+        `OpenCode Go 请求失败：${message}${
+          isNetworkError(message)
+            ? '（请确认本地代理正在运行：开发环境使用 Vite 的 /api/opencode-go，生产环境需配置反向代理）'
+            : ''
+        }`,
+      )
       return null
     }
   }
 
   // 对未实现的 provider 给出明确错误，避免静默失败。
-  console.error('Provider not implemented:', provider)
+  reportError(`暂不支持的提供商：${provider}`)
   return null
 }
