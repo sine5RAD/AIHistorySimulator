@@ -26,6 +26,10 @@ defineOptions({
           >：导入/编辑国家与国土、地图和颜色信息。
         </li>
         <li>
+          <strong>剧本编辑（/pages/scenario-editor）</strong
+          >：设定开局时间，配置政权代表色、政体、领导人、领土与初始国家力量。
+        </li>
+        <li>
           <strong>事件驱动（/pages/event-drive）</strong>：基于世界上下文进行事件推演与对话归档。
         </li>
         <li>
@@ -84,7 +88,24 @@ defineOptions({
       </article>
 
       <article class="route-card">
-        <h3>5. 事件驱动 /pages/event-drive</h3>
+        <h3>5. 剧本编辑 /pages/scenario-editor</h3>
+        <p>用途：把世界数据整理成可反复开局的事件推演剧本</p>
+        <p>怎么用：</p>
+        <ul>
+          <li>填写剧本名称与开局时间（支持任意文本时间，如 1945-09-02T09:00）</li>
+          <li>新建政权，配置代表色、政体、领导人与初始国家力量</li>
+          <li>
+            点击国家会选中该国全部下级行政区；放大后点击单个行政区可精确选择（地图最高
+            200×，右下角可缩放），切到「整国」模式可整国全选
+          </li>
+          <li>也可以从世界生成草稿导入手绘国土</li>
+          <li>在国家档案页导入文章转 JSON 得到的 CountryData，补全人口、政治、科技等字段</li>
+          <li>导出「剧本.json」，结构与存在国家、领土列表保持一致</li>
+        </ul>
+      </article>
+
+      <article class="route-card">
+        <h3>6. 事件驱动 /pages/event-drive</h3>
         <p>用途：在世界上下文中进行连续事件生成和多轮对话</p>
         <p>怎么用：</p>
         <ul>
@@ -95,7 +116,7 @@ defineOptions({
       </article>
 
       <article class="route-card">
-        <h3>6. 世界地图 /pages/world-map</h3>
+        <h3>7. 世界地图 /pages/world-map</h3>
         <p>用途：在地图上直观查看国家分布，作为后续事件推演的空间入口</p>
         <p>怎么用：</p>
         <ul>

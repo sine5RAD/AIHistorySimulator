@@ -23,6 +23,11 @@ const router = createRouter({
       component: () => import('../pages/world-generator/world-generator.vue'),
     },
     {
+      path: '/pages/scenario-editor',
+      name: 'scenario-editor',
+      component: () => import('../pages/scenario-editor/scenario-editor.vue'),
+    },
+    {
       path: '/pages/event-drive',
       name: 'event-drive',
       component: () => import('../pages/event-drive/event-drive.vue'),

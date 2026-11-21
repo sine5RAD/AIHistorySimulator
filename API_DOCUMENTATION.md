@@ -313,7 +313,74 @@ interface RgbColor {
 
 ---
 
-### 5. 事件驱动页面 (pages/event-drive)
+### 5. 剧本编辑页面 (pages/scenario-editor)
+**路由**: `/pages/scenario-editor`  
+**用途**: 配置开局时间与存在国家，编辑每个政权的代表色、政体、领导人、领土与初始国家力量
+
+#### 主要功能
+
+- 剧本 JSON 导入/导出与本地自动保存（`scenario-editor-draft`）
+- 新建/复制/删除政权；代表色支持取色器、预设与 `#RRGGBB` 文本
+- 政体建议下拉 + 自定义输入
+- 领导人列表（姓名 / 职位 / 简介，支持上下移动）
+- 初始国家力量三维度滑块（-100 ~ 100），同步写入 `国家指标`
+- 领土编辑默认「地区」选择：点击国家会加载并选中该国全部下级行政区，逐个记录地区编号
+  （中国 adcode、ISO 3166-2 等）；放大到 2.4 倍后点击单个行政区可精确选择
+- 领土地图最高 200×，右下角提供 `+ / − / 重置`；小地块（如摩纳哥的 9 个区）也能点中
+- 「整国」模式点击任意位置都会选中该国全部地区；再次点击已全选的国家可整体移出
+- 没有下级行政区数据时退回整国记录；整国与地区条目会自动拆分/合并，避免重叠
+- 从世界生成草稿 / 世界 JSON 导入国家与手绘国土（墨卡托纹理坐标自动转经纬度）
+- 国家档案导入 / 导出：兼容文章转 JSON 的 `CountryData` 与本页导出的 `.regime.json`
+- 实时校验：缺少开局时间、未命名政权、重复名称、重复代表色、无领土/政体等
+
+#### 数据结构
+
+```typescript
+interface ScenarioData {
+  剧本名称: string
+  开局时间: string
+  存在国家: RegimeData[]
+}
+
+interface RegimeData extends CountryData {
+  代表色: string
+  政体: string
+  领导人: Array<{ 姓名: string; 职位: string; 简介: string }>
+  领土: Array<{
+    名称: string
+    代码?: string // 地区编号：ISO3 / 中国 adcode / ISO 3166-2
+    国家代码?: string // 下级行政区所属国家 ISO3
+    级别?: 'country' | 'adm1' | 'adm2' | 'adm3'
+    区域?: Array<{ vertices: [number, number][] }> // 自定义多边形，[经度, 纬度]
+  }>
+  初始国家力量: { 政治稳定: number; 经济发展: number; 国际影响: number }
+}
+```
+
+#### 关键模块
+
+- `src/types/scenario.ts`：剧本 / 政权 / 领导人 / 领土类型与默认值
+- `src/utils/scenario-data.ts`：规范化、世界数据转换、导入导出
+- `src/lib/map/territory-code.ts`：国家 / 地区编号的统一算法
+- `src/composables/territory-map.ts`：领土地图选择（复用世界地图的投影、几何与行政区加载逻辑）
+- `src/pages/scenario-editor/scenario-editor.vue`：页面与交互
+
+#### localStorage 键
+
+| 键名 | 用途 |
+|-----|------|
+| `scenario-editor-draft` | 剧本草稿（自动保存） |
+| `scenario-editor-import` | 文章转 JSON 的一次性交接数据 |
+| `worldDataDraft` | 世界生成草稿（读取后转换领土） |
+
+#### 与文章转 JSON 的衔接
+
+文章转 JSON 页面校验通过后可点击「发送至剧本」，把 `CountryData` 写入 `scenario-editor-import` 并跳转；
+剧本编辑页会在已有剧本中追加为新政权，空剧本时直接载入。
+
+---
+
+### 6. 事件驱动页面 (pages/event-drive)
 **路由**: `/pages/event-drive`  
 **用途**: 在世界背景下进行连续多轮对话，推演历史事件发展，支持存档与快照
 
@@ -664,6 +731,37 @@ interface Party {
 }
 ```
 
+**scenario.ts** - 剧本与政权数据结构
+```typescript
+interface ScenarioData {
+  剧本名称: string
+  开局时间: string
+  存在国家: RegimeData[]
+}
+
+interface RegimeData extends CountryData {
+  代表色: string
+  政体: string
+  领导人: LeaderData[]
+  领土: TerritoryData[]
+  初始国家力量: CountryIndicatorData
+}
+
+interface LeaderData {
+  姓名: string
+  职位: string
+  简介: string
+}
+
+interface TerritoryData {
+  名称: string
+  代码?: string // 地区编号：ISO3 / 中国 adcode / ISO 3166-2
+  国家代码?: string // 下级行政区所属国家 ISO3
+  级别?: 'country' | 'adm1' | 'adm2' | 'adm3'
+  区域?: Area[] // 自定义多边形，[经度, 纬度]
+}
+```
+
 **world.ts** - 世界数据结构
 ```typescript
 interface WorldData {
@@ -712,7 +810,14 @@ interface LandData {
    ├─→ 调整国家颜色
    └─→ 传递到事件驱动页面
 
-第5步：事件驱动 (event-drive)
+第5步：剧本编辑 (scenario-editor)
+   ├─→ 填写剧本名称与开局时间
+   ├─→ 配置政权代表色 / 政体 / 领导人 / 初始国家力量
+   ├─→ 点击国家选中该国全部地区；放大后可单选；「整国」模式全选
+   ├─→ 导入文章转 JSON 的国家档案
+   └─→ 导出剧本.json
+
+第6步：事件驱动 (event-drive)
    ├─→ 确认世界数据已加载
    ├─→ 多轮对话推演事件
    ├─→ 创建快照存档
@@ -737,6 +842,14 @@ interface LandData {
   → 球体3D渲染 → 交互式旋转拖拽 → 导出世界数据
 ```
 
+### 剧本编辑流程
+```
+世界草稿/国家JSON → normalizeScenarioData → 政权表单
+  → 低倍率点击国家（ISO3）或放大后点击行政区（地区编号）
+  → 或世界国土转换（墨卡托 [u,v] → [经度, 纬度]）
+  → 自动保存草稿（localStorage）→ 导出 剧本.json
+```
+
 ### 事件推演流程
 ```
 世界数据加载 → 系统提示词初始化 → 用户输入消息 
@@ -756,6 +869,9 @@ interface LandData {
 | 提示词 | `prompt-event-drive` | 事件驱动提示词 |
 | 时区 | 动态键 | 时区选择 |
 | 世界生成 | `worldDataDraft` | 世界数据草稿 |
+| 剧本编辑 | `scenario-editor-draft` | 剧本草稿（自动保存） |
+| 剧本编辑 | `scenario-editor-import` | 文章转 JSON 的交接数据 |
+| 剧本编辑 | `worldDataDraft` | 读取世界生成草稿并转换领土 |
 | 事件驱动 | `event-drive-world-chat-archive-json` | 聊天存档 |
 | 事件驱动 | `event-drive-snapshot-history-json` | 快照历史 |
 | 事件驱动 | `event-drive-selected-snapshot-id` | 当前快照ID |

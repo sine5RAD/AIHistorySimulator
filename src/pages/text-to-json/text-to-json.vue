@@ -289,6 +289,26 @@ const sendToWorld = () => {
   }
 }
 
+const sendToScenario = () => {
+  // Ensure validation has been run and passed before sending
+  if (!validationPassed.value) {
+    validateResultJson()
+    if (!validationPassed.value) return
+  }
+
+  const jsonText = normalizeJsonText(resultText.value)
+
+  try {
+    // store raw CountryData JSON for scenario-editor to import as a regime
+    window.localStorage.setItem('scenario-editor-import', jsonText)
+    router.push({ name: 'scenario-editor' })
+  } catch (err) {
+    validationErrors.value = ['发送失败，请稍后重试。']
+    validationPassed.value = false
+    console.error('sendToScenario error', err)
+  }
+}
+
 const downloadResultAsJson = () => {
   if (!resultText.value.trim()) {
     errorText.value = '没有可下载的模型结果。'
@@ -457,6 +477,14 @@ onMounted(() => {
           >
             发送至世界
           </button>
+          <button
+            v-if="validationPassed === true"
+            type="button"
+            class="submit-button"
+            @click="sendToScenario"
+          >
+            发送至剧本
+          </button>
         </div>
         <div v-if="validationPassed === true" class="success-text">
           JSON 校验通过，结构与 `CountryData` 匹配。
@@ -539,7 +567,9 @@ onMounted(() => {
 
 .action-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  gap: 8px;
 }
 
 .submit-button {
