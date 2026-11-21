@@ -75,17 +75,18 @@ export interface TerritoryMapOptions {
   selectedCodes: Ref<string[]>
   /** 当前政权的代表色，供页面展示与未来扩展 */
   currentColor: Ref<string>
-  /** 选择粒度：region 优先选下级行政区，country 只选国家 */
-  mode: Ref<'region' | 'country'>
-  /** 点击某个国家或地区时触发；由页面决定加入、移出或转交 */
+  /**
+   * 点击某个地区时触发；由页面决定加入、移出或转交。
+   * 只有当下级行政区没有数据时，才会把国家要素传出来，供页面提示。
+   */
   onToggle: (feature: WorldMapFeature) => void
 }
 
 /**
  * 剧本编辑里的领土选择地图。
  *
- * 低倍率下按国家选择；放大到 `REGION_ZOOM` 后加载并显示下级行政区，
- * 命中优先级与「世界地图」页面一致：先地区、后国家。
+ * 低倍率只显示国界；放大到 `REGION_ZOOM` 后加载并显示下级行政区，
+ * 只有地区可以被选中，命中优先级与「世界地图」页面一致：先地区、后国家。
  */
 export function useTerritoryMap(options: TerritoryMapOptions) {
   const containerRef = ref<HTMLDivElement | null>(null)
@@ -270,51 +271,6 @@ export function useTerritoryMap(options: TerritoryMapOptions) {
       adm2Store.ensure(iso)
       syncRegionLoading()
     }
-  }
-
-  /**
-   * 等待某个国家的下级行政区加载完成。
-   * 用于「点选国家 = 选中该国全部地区」：行政区数据可能还没拉下来，需要异步等待。
-   */
-  function loadCountryRegions(rawIso: string): Promise<WorldMapFeature[]> {
-    const iso = rawIso.trim().toUpperCase()
-    if (!iso || !adm2Store) {
-      return Promise.resolve([])
-    }
-
-    const loaded = adm2Store.chunk(iso)
-    if (loaded) {
-      return Promise.resolve(loaded.features)
-    }
-
-    return new Promise((resolve) => {
-      const startedAt = Date.now()
-
-      const poll = () => {
-        if (!adm2Store) {
-          resolve([])
-          return
-        }
-
-        const chunk = adm2Store.chunk(iso)
-        if (chunk) {
-          resolve(chunk.features)
-          return
-        }
-
-        const state = adm2Store.state(iso)
-        if (state === 'missing' || Date.now() - startedAt > 20_000) {
-          resolve([])
-          return
-        }
-
-        adm2Store.ensure(iso)
-        syncRegionLoading()
-        window.setTimeout(poll, 120)
-      }
-
-      poll()
-    })
   }
 
   function findAdminFeature(rawCode: string): WorldMapFeature | null {
@@ -873,8 +829,8 @@ export function useTerritoryMap(options: TerritoryMapOptions) {
 
     const current = camera()
 
-    // 地区模式先命中下级行政区；跨 180° 的国家在三份经度副本里都要尝试。
-    if (options.mode.value === 'region' && regionMode.value && adm2Store) {
+    // 先命中下级行政区；跨 180° 的国家在三份经度副本里都要尝试。
+    if (regionMode.value && adm2Store) {
       const chunks = adm2Store.list()
       for (const shift of LONGITUDE_SHIFTS) {
         const { lng, lat } = screenToWorld(current, point.x, point.y, shift)
@@ -898,7 +854,7 @@ export function useTerritoryMap(options: TerritoryMapOptions) {
           continue
         }
 
-        if (options.mode.value !== 'region' || !regionMode.value || !adm2Store) {
+        if (!regionMode.value || !adm2Store) {
           return feature
         }
 
@@ -1319,7 +1275,6 @@ export function useTerritoryMap(options: TerritoryMapOptions) {
     resetView,
     focusOnCode,
     focusOnTerritory,
-    loadCountryRegions,
     retry: load,
   }
 }

@@ -42,7 +42,6 @@ type EditorTab = 'regime' | 'territory' | 'archive'
 type PowerKey = '政治稳定' | '经济发展' | '国际影响'
 type MessageLevel = 'info' | 'error'
 type IssueLevel = 'error' | 'warning'
-type SelectionMode = 'region' | 'country'
 
 interface ScenarioIssue {
   level: IssueLevel
@@ -64,8 +63,6 @@ const powerHints: Record<PowerKey, string> = {
 const scenario = ref<ScenarioData>(createEmptyScenarioData())
 const currentIndex = ref(0)
 const activeTab = ref<EditorTab>('regime')
-const selectionMode = ref<SelectionMode>('region')
-const bulkSelectingCountry = ref('')
 const statusMessage = ref('')
 const errorMessage = ref('')
 const lastSavedAt = ref<Date | null>(null)
@@ -226,13 +223,8 @@ const currentTerritoryCodes = computed(() =>
 
 const currentRegimeColor = computed(() => currentRegime.value.代表色 || DEFAULT_REGIME_COLOR)
 
-const territoryHint = computed(() => {
-  if (selectionMode.value === 'country') {
-    return '当前为整国选择：点击国家或地区，会选中该国的全部下级行政区；再次点击已全选的国家可整体移出。'
-  }
-
-  return '当前为地区选择：点击国家会选中该国全部地区；放大到 2.4 倍后点击单个行政区可精确选择。'
-})
+const territoryHint =
+  '只能按地区选择：放大到 2.4 倍后点击具体的下级行政区，即可划入或移出当前政权；从导入数据继承的整国编号领土仍会显示在列表里，可单独删除。'
 
 const {
   containerRef: territoryMapContainer,
@@ -248,16 +240,13 @@ const {
   zoomIn: zoomTerritoryIn,
   zoomOut: zoomTerritoryOut,
   resetView: resetTerritoryView,
-  focusOnCode,
   focusOnTerritory,
-  loadCountryRegions,
   retry: retryTerritoryMap,
 } = useTerritoryMap({
   assignments: assignmentMap,
   areaGroups,
   selectedCodes: currentTerritoryCodes,
   currentColor: currentRegimeColor,
-  mode: selectionMode,
   onToggle: (feature) => toggleTerritory(feature),
 })
 
@@ -591,16 +580,6 @@ const territoryLevelLabels: Record<string, string> = {
 const territoryCode = (territory: TerritoryData): string =>
   normalizeTerritoryCode(territory.代码 ?? '')
 
-const territoryCountryCode = (territory: TerritoryData): string =>
-  (territory.国家代码 ?? '').trim().toUpperCase()
-
-const isCountryLevel = (territory: TerritoryData): boolean => {
-  if (territory.级别) {
-    return territory.级别 === 'country'
-  }
-  return COUNTRY_CODE_PATTERN.test(territoryCode(territory))
-}
-
 const resolveTerritoryLevel = (territory: TerritoryData): TerritoryLevel | '' => {
   if (territory.级别) {
     return territory.级别
@@ -625,178 +604,19 @@ const removeTerritories = (
   return removed
 }
 
-const isTerritoryOfCountry = (territory: TerritoryData, rawCountryCode: string): boolean => {
-  const countryCode = rawCountryCode.trim().toUpperCase()
-  if (!countryCode) {
-    return false
-  }
-
-  const code = territoryCode(territory)
-  return (
-    (isCountryLevel(territory) && code === countryCode) ||
-    territoryCountryCode(territory) === countryCode ||
-    code.startsWith(`${countryCode}-`) ||
-    code.startsWith(`${countryCode}:`)
-  )
-}
-
-/**
- * 没有下级行政区数据时的兜底：仍然按整国记录，否则该国无法被选择。
- */
-const addCountryFallback = (feature: WorldMapFeature) => {
-  if (!hasCurrentRegime.value) {
-    return
-  }
-
-  const regime = currentRegime.value
-  const code = getFeatureTerritoryCode(feature)
-  const name = feature.name || code
-
-  const existingIndex = regime.领土.findIndex(
-    (territory) => isCountryLevel(territory) && territoryCode(territory) === code,
-  )
-  if (existingIndex >= 0) {
-    regime.领土.splice(existingIndex, 1)
-    showMessage(`已将「${name}」移出「${regime.国家名称 || '当前政权'}」。`)
-    return
-  }
-
-  removeTerritories(regime, (territory) => isTerritoryOfCountry(territory, code))
-  for (const other of scenario.value.存在国家) {
-    if (other === regime) {
-      continue
-    }
-    removeTerritories(
-      other,
-      (territory) => isCountryLevel(territory) && territoryCode(territory) === code,
-    )
-  }
-
-  regime.领土.push({ 名称: name, 代码: code, 级别: 'country' })
-  showMessage(`「${name}」没有可用的下级行政区数据，已按整国记录。`)
-}
-
-/**
- * 点选国家：加载该国全部下级行政区，逐个写入领土，而不是写入一条「国家」。
- * 已全部选中时再次点击则整体移出。
- */
-async function selectAllRegionsOfCountry(feature: WorldMapFeature) {
-  if (!hasCurrentRegime.value) {
-    showMessage('请先新建或选择一个政权。', 'error')
-    return
-  }
-
-  const iso = (feature.iso || feature.code || '').trim().toUpperCase()
-  const name = feature.name || iso
-
-  if (!iso) {
-    showMessage('这个国家没有可用的 ISO 代码。', 'error')
-    return
-  }
-
-  if (bulkSelectingCountry.value) {
-    showMessage(`正在加载「${bulkSelectingCountry.value}」的全部地区，请稍候。`)
-    return
-  }
-
-  const targetRegime = currentRegime.value
-  bulkSelectingCountry.value = name
-
-  try {
-    showMessage(`正在加载「${name}」的全部下级行政区…`)
-    const regions = await loadCountryRegions(iso)
-
-    if (!scenario.value.存在国家.includes(targetRegime)) {
-      return
-    }
-
-    if (!regions.length) {
-      addCountryFallback(feature)
-      return
-    }
-
-    const entries: TerritoryData[] = []
-    const seenCodes = new Set<string>()
-
-    for (const region of regions) {
-      if (region.level === 'country') {
-        continue
-      }
-
-      const code = getFeatureTerritoryCode(region)
-      if (!code || seenCodes.has(code)) {
-        continue
-      }
-      seenCodes.add(code)
-
-      entries.push({
-        名称: region.name || code,
-        代码: code,
-        国家代码: (region.iso || iso).trim().toUpperCase(),
-        级别: region.level as TerritoryLevel,
-      })
-    }
-
-    if (!entries.length) {
-      addCountryFallback(feature)
-      return
-    }
-
-    const regionCodes = new Set(
-      entries.map((entry) => entry.代码).filter((code): code is string => Boolean(code)),
-    )
-    const currentCodes = new Set(targetRegime.领土.map(territoryCode))
-    const allPresent = [...regionCodes].every((code) => currentCodes.has(code))
-
-    if (allPresent) {
-      const removed = removeTerritories(
-        targetRegime,
-        (territory) =>
-          isTerritoryOfCountry(territory, iso) || regionCodes.has(territoryCode(territory)),
-      )
-      showMessage(
-        `已将「${name}」的 ${removed} 条地区移出「${targetRegime.国家名称 || '当前政权'}」。`,
-      )
-      return
-    }
-
-    let removed = 0
-    for (const target of scenario.value.存在国家) {
-      removed += removeTerritories(
-        target,
-        (territory) =>
-          isTerritoryOfCountry(territory, iso) || regionCodes.has(territoryCode(territory)),
-      )
-    }
-
-    targetRegime.领土.push(...entries)
-    showMessage(
-      `已将「${name}」的全部 ${entries.length} 个地区划入「${
-        targetRegime.国家名称 || '当前政权'
-      }」${removed ? `（替换 ${removed} 条旧记录）` : ''}。`,
-    )
-
-    // 缩放到该国，让地区填色立刻可见
-    focusOnCode(iso, true)
-  } catch (error) {
-    console.error('Failed to select all country regions', error)
-    showMessage(`加载「${name}」的下级行政区失败。`, 'error')
-  } finally {
-    if (bulkSelectingCountry.value === name) {
-      bulkSelectingCountry.value = ''
-    }
-  }
-}
-
 function toggleTerritory(feature: WorldMapFeature) {
   if (!hasCurrentRegime.value) {
     showMessage('请先新建或选择一个政权。', 'error')
     return
   }
 
-  // 点到国家：选中该国全部地区；没有地区数据时才按整国兜底
+  // 只支持地区粒度：点到国家只给出提示，不再整国选中
   if (feature.level === 'country') {
-    void selectAllRegionsOfCountry(feature)
+    showMessage(
+      territoryRegionMode.value
+        ? `「${feature.name || '该国家'}」没有可用的下级行政区数据，无法按地区选择。`
+        : '只能选择地区：请把地图放大到 2.4 倍以上，再点击具体的下级行政区。',
+    )
     return
   }
 
@@ -806,7 +626,7 @@ function toggleTerritory(feature: WorldMapFeature) {
   const name = feature.name || code
 
   if (!code) {
-    showMessage('这个地图要素没有可用编号。', 'error')
+    showMessage('这个地区没有可用编号。', 'error')
     return
   }
 
@@ -818,20 +638,7 @@ function toggleTerritory(feature: WorldMapFeature) {
     return
   }
 
-  // 地区不能和整国领土并存：先把该国的整国条目拆掉
-  let splitWholeCountry = false
-  if (countryCode) {
-    for (const target of scenario.value.存在国家) {
-      const removed = removeTerritories(
-        target,
-        (territory) => isCountryLevel(territory) && territoryCode(territory) === countryCode,
-      )
-      if (removed) {
-        splitWholeCountry = true
-      }
-    }
-  }
-
+  // 同一块地区只属于一个政权：从其他政权转交过来
   let transferredFrom = ''
   for (const target of scenario.value.存在国家) {
     if (target === regime) {
@@ -849,12 +656,9 @@ function toggleTerritory(feature: WorldMapFeature) {
     级别: feature.level as TerritoryLevel,
   })
 
-  const notes: string[] = []
-  if (transferredFrom) notes.push(`从「${transferredFrom}」转交`)
-  if (splitWholeCountry) notes.push('原整国领土已拆分')
   showMessage(
     `已将「${name}」划入「${regime.国家名称 || '当前政权'}」${
-      notes.length ? `（${notes.join('；')}）` : ''
+      transferredFrom ? `（从「${transferredFrom}」转交）` : ''
     }。`,
   )
 }
@@ -1536,26 +1340,7 @@ onBeforeUnmount(() => {
         <div v-show="activeTab === 'territory'" class="tab-panel territory-tab">
           <div class="territory-toolbar">
             <div>
-              <div class="toolbar-title-row">
-                <p class="toolbar-title">领土分配</p>
-                <div class="territory-mode-switch" role="group" aria-label="领土选择粒度">
-                  <button
-                    type="button"
-                    :class="{ 'is-active': selectionMode === 'region' }"
-                    @click="selectionMode = 'region'"
-                  >
-                    地区
-                  </button>
-                  <button
-                    type="button"
-                    :class="{ 'is-active': selectionMode === 'country' }"
-                    title="点击国家或地区，选中该国的全部下级行政区"
-                    @click="selectionMode = 'country'"
-                  >
-                    整国
-                  </button>
-                </div>
-              </div>
+              <p class="toolbar-title">领土分配</p>
               <p class="toolbar-hint">
                 {{ territoryHint }}
                 滚轮或右下角按钮缩放（最高
@@ -1577,7 +1362,7 @@ onBeforeUnmount(() => {
                 <canvas
                   ref="territoryMapCanvas"
                   class="territory-map-canvas"
-                  aria-label="领土地图：点击国家或地区分配领土"
+                  aria-label="领土地图：点击地区分配领土"
                 />
 
                 <div v-if="territoryMapState === 'loading'" class="map-overlay">
@@ -1595,17 +1380,8 @@ onBeforeUnmount(() => {
                 <div v-if="territoryMapHoverName" class="map-hover-pill">
                   {{ territoryMapHoverName }}
                 </div>
-                <div
-                  class="map-mode-pill"
-                  :class="{ 'is-region': selectionMode === 'region' }"
-                  role="status"
-                >
-                  {{ selectionMode === 'region' ? '地区选择' : '整国选择' }}
-                </div>
-                <div v-if="bulkSelectingCountry" class="map-region-loading">
-                  正在加载「{{ bulkSelectingCountry }}」的全部地区…
-                </div>
-                <div v-else-if="territoryRegionLoading" class="map-region-loading">
+                <div class="map-mode-pill" role="status">地区选择</div>
+                <div v-if="territoryRegionLoading" class="map-region-loading">
                   正在加载下级行政区…
                 </div>
                 <div class="map-legend">
@@ -1646,7 +1422,7 @@ onBeforeUnmount(() => {
               </div>
 
               <div v-if="!currentRegime.领土.length" class="territory-empty">
-                还没有领土。点击左侧地图上的国家或地区，或从世界生成导入手绘国土。
+                还没有领土。放大地图后点击地区，或从世界生成导入手绘国土。
               </div>
 
               <ol v-else class="territory-list">
@@ -2525,46 +2301,10 @@ textarea {
   flex-wrap: wrap;
 }
 
-.toolbar-title-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px;
-}
-
 .toolbar-title {
   margin: 0;
   font-size: 14px;
   font-weight: 600;
-}
-
-.territory-mode-switch {
-  display: inline-flex;
-  padding: 2px;
-  border: 1px solid var(--color-border);
-  border-radius: 999px;
-  background: var(--color-background);
-}
-
-.territory-mode-switch button {
-  padding: 3px 10px;
-  border: none;
-  border-radius: 999px;
-  background: transparent;
-  font-size: 11px;
-  opacity: 0.6;
-}
-
-.territory-mode-switch button:hover:not(:disabled) {
-  background: transparent;
-  opacity: 0.9;
-}
-
-.territory-mode-switch button.is-active {
-  background: var(--scenario-accent-soft);
-  color: var(--scenario-accent);
-  font-weight: 600;
-  opacity: 1;
 }
 
 .toolbar-hint {
@@ -2661,11 +2401,6 @@ textarea {
   color: #93c5fd;
   font-size: 11px;
   pointer-events: none;
-}
-
-.map-mode-pill.is-region {
-  border-color: rgba(147, 197, 253, 0.7);
-  color: #dbeafe;
 }
 
 .map-region-loading {
