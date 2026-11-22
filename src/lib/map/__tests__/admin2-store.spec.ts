@@ -150,6 +150,39 @@ describe('Admin2Store', () => {
     expect(store.state('FRA')).toBe('missing')
   })
 
+  it('列出索引里的国家，并可动态调大内存上限', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof fetch>(async () => jsonResponse(chunkPayload)),
+    )
+
+    const store = new Admin2Store({
+      baseUrl: '/',
+      index: {
+        countries: { AAA: { units: 1 }, BBB: { units: 1 }, CCC: { units: 1 } },
+      },
+      enableRemote: false,
+      maxCountries: 1,
+      onChange: () => {},
+    })
+
+    expect(store.indexedCountries()).toEqual(['AAA', 'BBB', 'CCC'])
+
+    store.ensure('AAA')
+    await vi.waitFor(() => expect(store.state('AAA')).toBe('ready'))
+    store.ensure('BBB')
+    await vi.waitFor(() => expect(store.state('BBB')).toBe('ready'))
+    store.retain(new Set(['AAA']))
+    expect(store.loadedCountries).toBe(1)
+
+    // 存档政治地图需要一次保留整份世界，调大后不会再淘汰。
+    store.setMaxCountries(10)
+    store.ensure('BBB')
+    await vi.waitFor(() => expect(store.state('BBB')).toBe('ready'))
+    store.retain(new Set(['AAA', 'BBB']))
+    expect(store.loadedCountries).toBe(2)
+  })
+
   it('retain 只保留可视范围内的国家（LRU 淘汰）', async () => {
     vi.stubGlobal(
       'fetch',

@@ -31,7 +31,7 @@ const isEmptyValue = (value: unknown): boolean => {
   }
 
   if (Array.isArray(value)) {
-    return value.length === 0 || value.every(isEmptyValue)
+    return value.every(isEmptyValue)
   }
 
   if (isRecord(value)) {

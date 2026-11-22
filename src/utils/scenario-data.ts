@@ -234,7 +234,7 @@ const normalizeArea = (value: unknown): Area | null => {
 }
 
 /** 兼容 `{ areas: [...] }`、`[{ vertices }]`、`[[lng, lat], ...]` 三种写法。 */
-const normalizeAreas = (value: unknown): Area[] => {
+export const normalizeAreas = (value: unknown): Area[] => {
   if (Array.isArray(value)) {
     return value.map(normalizeArea).filter((area): area is Area => area !== null)
   }

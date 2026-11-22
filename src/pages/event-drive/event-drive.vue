@@ -21,6 +21,17 @@ import { matchCountryNamesInText } from '@/utils/country-mentions'
 import { buildBriefCountries, buildDetailCountries } from '@/utils/event-drive-context'
 import { compactRegimeForEventDrive, estimateTextTokens } from '@/utils/scenario-ai'
 import {
+  applyRegimeChanges,
+  findCountryIndex,
+  splitAssistantChangePayload,
+} from '@/utils/regime-change'
+import { CODE_LEVELS, countTerritoryBuckets, readTerritoryBuckets } from '@/utils/territory-summary'
+import {
+  MAX_TERRITORY_QUERY_ROUNDS,
+  buildTerritoryQueryReply,
+  parseTerritoryQuery,
+} from '@/utils/territory-query'
+import {
   EVENT_DRIVE_FRESH_SESSION_KEY,
   SCENARIO_TRANSFER_KEY,
   parseScenarioTransferPayload,
@@ -31,6 +42,8 @@ import FloatingCountrySidebar, {
   type FloatingCountrySidebarItem,
 } from '@/components/floating-country-sidebar/floating-country-sidebar.vue'
 import type { CountryEventTriggerChangeData, CountryIndicatorData } from '@/types/country'
+import type { RegimeChangeData, RegimeTerritorySummary } from '@/types/regime'
+import type { TerritoryCodeLevel } from '@/utils/territory-summary'
 
 type ChatRole = 'user' | 'assistant'
 
@@ -69,6 +82,20 @@ interface WorldLandTransferPayload {
   tree?: unknown
   landMap?: Record<string, unknown>
   countryColorMap?: Record<string, unknown>
+  /**
+   * 地区编号 → 地区名称。
+   *
+   * 只用于本地展示（「领土划转」面板）与给 AI 的详情档，
+   * 不进入每轮国家简报，因此不影响上下文预算。
+   */
+  territoryNames?: Record<string, string>
+  /**
+   * 地区编号 → 所属国家 ISO3。
+   *
+   * 只供世界地图按存档复原国界时精确匹配 `N/A` 这类重复编号；
+   * 不进入每轮简报，也不影响 AI 上下文。
+   */
+  territoryCountries?: Record<string, string>
 }
 
 interface WorldLandTransferState {
@@ -134,6 +161,32 @@ const actionMenuOpen = ref(false)
 const activeActionKind = ref<EventDriveActionKind | null>(null)
 const actionInput = ref<EventDriveActionInput>(createEmptyEventDriveActionInput())
 const actionPickerRef = ref<HTMLElement | null>(null)
+
+/** 「政权管理」面板的新建表单；数值留空时按 0 处理。 */
+const regimeDraft = ref({
+  国家名称: '',
+  政体: '',
+  取代政权: '',
+  政治稳定: 0,
+  经济发展: 0,
+  国际影响: 0,
+  玩家操控: false,
+})
+
+/** 「政权管理」面板的灭亡表单；继承国为空表示领土无主。 */
+const destroyDraft = ref({
+  政权名称: '',
+  继承国: '',
+})
+
+/** 「领土划转」面板：来源政权 → 勾选地区 → 接收方。 */
+const transferDraft = ref({
+  来源政权: '',
+  接收方: '',
+  关键词: '',
+  /** 已勾选的地区编号。 */
+  选中: [] as string[],
+})
 
 const formatIndicatorValue = (value: number) => {
   if (!Number.isFinite(value)) {
@@ -228,6 +281,43 @@ const getCountryColorMapFromPayload = (
   return {}
 }
 
+/** 地区编号 → 地区名称；剧本交接时由剧本编辑器写入，老存档可能没有。 */
+const getTerritoryNamesFromPayload = (
+  payload: WorldLandTransferPayload | null,
+): Record<string, string> => {
+  if (!payload || !isRecord(payload.territoryNames)) {
+    return {}
+  }
+
+  const names: Record<string, string> = {}
+
+  for (const [rawCode, rawName] of Object.entries(payload.territoryNames)) {
+    const code = rawCode.trim()
+    const name = typeof rawName === 'string' ? rawName.trim() : ''
+
+    if (code && name) {
+      names[code] = name
+    }
+  }
+
+  return names
+}
+
+/** 地区名称 → 编号：让 `领土` 里写地区名也能落地。 */
+const territoryNameIndex = computed(() => {
+  const index: Record<string, string> = {}
+
+  for (const [code, name] of Object.entries(
+    getTerritoryNamesFromPayload(activeWorldPayload.value),
+  )) {
+    if (!index[name]) {
+      index[name] = code
+    }
+  }
+
+  return index
+})
+
 const countrySidebarItems = computed<FloatingCountrySidebarItem[]>(() => {
   const countries = getCountriesFromPayload(activeWorldPayload.value)
 
@@ -262,6 +352,10 @@ const countrySidebarItems = computed<FloatingCountrySidebarItem[]>(() => {
         {
           label: '国际影响',
           value: indicators ? formatIndicatorValue(indicators.国际影响) : '暂无',
+        },
+        {
+          label: '领土',
+          value: `${countTerritoryBuckets(readTerritoryBuckets(record.领土))}`,
         },
       ],
       summary: formatBriefSummary(record),
@@ -950,7 +1044,11 @@ const buildScenarioDetailMessage = (
   payload: WorldLandTransferPayload,
   matchedNames: readonly string[],
 ): PromptMessage | null => {
-  const countries = buildDetailCountries(getCountriesFromPayload(payload), matchedNames)
+  const countries = buildDetailCountries(
+    getCountriesFromPayload(payload),
+    matchedNames,
+    getTerritoryNamesFromPayload(payload),
+  )
 
   if (!countries.length) {
     return null
@@ -960,6 +1058,7 @@ const buildScenarioDetailMessage = (
     role: 'user',
     content: [
       `以下是本轮消息涉及国家的详细档案（${matchedNames.join('、')}），仅作参考；国家名单与规则仍以前面的国家简报为准。`,
+      '档案里的「领土」额外给出了 adm1 的编号与名称（adm2 及以下只给数量）。需要在「政权变更」里划转领土时，只能使用这里出现过的编号，也可以直接写名称，系统会反查。',
       '',
       '```json',
       JSON.stringify({ 国家: countries }, null, 2),
@@ -1014,12 +1113,28 @@ const createWorldPayloadFromScenario = (
   transfer: ScenarioTransferPayload,
 ): WorldLandTransferPayload => {
   const countryColorMap: Record<string, string> = {}
+  const territoryNames: Record<string, string> = {}
+  const territoryCountries: Record<string, string> = {}
 
   for (const regime of transfer.scenario.存在国家) {
     const name = regime.国家名称.trim()
 
     if (name) {
       countryColorMap[name] = regime.代表色
+    }
+
+    for (const territory of regime.领土) {
+      const code = territory.代码?.trim()
+      const areaName = territory.名称?.trim()
+      const countryCode = territory.国家代码?.trim().toUpperCase()
+
+      if (code && areaName && areaName !== code && !territoryNames[code]) {
+        territoryNames[code] = areaName
+      }
+
+      if (code && countryCode && !territoryCountries[code]) {
+        territoryCountries[code] = countryCode
+      }
     }
   }
 
@@ -1029,6 +1144,8 @@ const createWorldPayloadFromScenario = (
     scenarioName: transfer.scenario.剧本名称,
     scenarioStartTime: transfer.scenario.开局时间,
     countryColorMap,
+    territoryNames,
+    territoryCountries,
     countries: transfer.scenario.存在国家.map(compactRegimeForEventDrive),
   }
 }
@@ -1230,9 +1347,43 @@ const submitChatContent = async (
   await scrollToBottom()
 
   try {
-    const response = await submitPreparedPrompt(buildPreparedPrompt(modelOverride))
+    const trailingMessages: PromptMessage[] = []
+    let response = ''
+    let queryRounds = 0
 
-    if (!response?.trim()) {
+    for (;;) {
+      const rawResponse = await submitPreparedPrompt(
+        buildPreparedPrompt(modelOverride, trailingMessages),
+      )
+
+      response = rawResponse?.trim() ?? ''
+
+      if (!response) {
+        break
+      }
+
+      // 模型只想要地名/编号对照表时，本地回填后直接再跑一轮，不进聊天窗口。
+      const queryReply = resolveTerritoryQueryFromText(response)
+
+      if (!queryReply) {
+        break
+      }
+
+      if (queryRounds >= MAX_TERRITORY_QUERY_ROUNDS) {
+        errorText.value = 'AI 连续请求查询领土超过上限，本轮没有产生变更。'
+        chatMessages.value.push({
+          role: 'assistant',
+          content: 'AI 反复请求领土对照表，已停止本轮；请换一种说法，或直接指定地区。',
+        })
+        return false
+      }
+
+      queryRounds += 1
+      trailingMessages.push({ role: 'assistant', content: response })
+      trailingMessages.push({ role: 'user', content: queryReply })
+    }
+
+    if (!response) {
       errorText.value = '模型没有返回有效结果。'
       chatMessages.value.push({
         role: 'assistant',
@@ -1244,12 +1395,12 @@ const submitChatContent = async (
     if (!suppressAssistantReply) {
       chatMessages.value.push({
         role: 'assistant',
-        content: response.trim(),
+        content: response,
       })
 
       // 尝试解析并应用 AI 在回复中包含的指标变更 JSON（如果存在）
       try {
-        await handleAssistantResponse(response.trim())
+        await handleAssistantResponse(response)
       } catch (error) {
         console.error('处理 AI 回复中的指标变更时发生错误', error)
       }
@@ -1298,7 +1449,7 @@ const resetChat = async () => {
   await scrollToBottom()
 }
 
-const buildPreparedPrompt = (modelOverride?: string) => {
+const buildPreparedPrompt = (modelOverride?: string, trailingMessages: PromptMessage[] = []) => {
   const detailMessage = buildScenarioDetailMessageForCurrentRequest()
 
   return {
@@ -1316,8 +1467,41 @@ const buildPreparedPrompt = (modelOverride?: string) => {
         role: message.role,
         content: message.content,
       })),
+      // 静默查询的往返消息只出现在本次请求里，不写进聊天窗口。
+      ...trailingMessages,
     ],
   }
+}
+
+/**
+ * 解析一段回复里的「查询领土」请求，并在本地生成对照表。
+ *
+ * 命中查询时返回要回填的文本，否则返回 null。
+ */
+const resolveTerritoryQueryFromText = (text: string): string | null => {
+  const jsonText = extractJsonFromText(text)
+
+  if (!jsonText) {
+    return null
+  }
+
+  let parsed: unknown
+
+  try {
+    parsed = JSON.parse(jsonText)
+  } catch {
+    return null
+  }
+
+  const request = parseTerritoryQuery(parsed)
+
+  if (!request) {
+    return null
+  }
+
+  return buildTerritoryQueryReply(request, getCountriesFromPayload(activeWorldPayload.value), {
+    names: getTerritoryNamesFromPayload(activeWorldPayload.value),
+  })
 }
 
 const sendSilentInstructionToAi = async (instruction: string) => {
@@ -1451,6 +1635,358 @@ const handleEditStat = async (payload: FloatingCountrySidebarEditStatPayload) =>
   }
 }
 
+/* ------------------------------------------------------------------ *
+ * 政权管理：建立 / 灭亡
+ *
+ * 世界包里的政权只有「名称 + 领土编号」，所以建国与灭国本质是一次编号搬迁，
+ * 判定与落库规则都在 utils/regime-change.ts 里；这里只负责收集输入、
+ * 写回世界包、刷新简报并落盘，保证下一轮请求带的是新的国家名单。
+ * ------------------------------------------------------------------ */
+
+/** 代表色表可能挂在顶层，也可能挂在 world 下面，写回时保持与原位置一致。 */
+const writeCountryColorMap = (
+  payload: WorldLandTransferPayload,
+  colorMap: Record<string, string>,
+) => {
+  if (isRecord(payload.world) && isRecord(payload.world.countryColorMap)) {
+    payload.world.countryColorMap = colorMap
+    return
+  }
+
+  payload.countryColorMap = colorMap
+}
+
+/**
+ * 手动执行一批政权变更（玩家在面板里点，而不是 AI 写回）。
+ *
+ * 手动操作允许处理玩家操控的政权，AI 写回则不允许；这条差异由
+ * `allowPlayerRegime` 控制，写在纯函数里而不是靠提示词自觉。
+ */
+const applyManualRegimeChange = async (changes: RegimeChangeData[]): Promise<boolean> => {
+  const payload = activeWorldPayload.value
+
+  if (!payload || isSending.value || !changes.length) {
+    return false
+  }
+
+  const result = applyRegimeChanges(
+    getCountriesFromPayload(payload),
+    activeCountryIndicators.value,
+    getCountryColorMapFromPayload(payload),
+    changes,
+    { allowPlayerRegime: true, nameIndex: territoryNameIndex.value },
+  )
+
+  if (!result.applied.length) {
+    errorText.value = result.failed.join('；') || '政权变更未生效。'
+    return false
+  }
+
+  activeCountryIndicators.value = result.indicators
+  writeCountryColorMap(payload, result.colorMap)
+  refreshWorldContextMessage()
+  saveCurrentWorldArchive()
+
+  for (const line of result.applied) {
+    chatMessages.value.push({ role: 'assistant', content: `（手动）${line}` })
+  }
+
+  for (const warning of result.warnings) {
+    chatMessages.value.push({ role: 'assistant', content: `⚠ ${warning}` })
+  }
+
+  errorText.value = result.failed.join('；')
+  return true
+}
+
+const createRegimeFromPanel = async () => {
+  const name = regimeDraft.value.国家名称.trim()
+
+  if (!name) {
+    errorText.value = '请先填写新政权名称。'
+    return
+  }
+
+  const changes: RegimeChangeData[] = [
+    {
+      类型: '建立',
+      政权名称: name,
+      政体: regimeDraft.value.政体.trim() || undefined,
+      AI控制: !regimeDraft.value.玩家操控,
+      国家指标: {
+        政治稳定: Number(regimeDraft.value.政治稳定) || 0,
+        经济发展: Number(regimeDraft.value.经济发展) || 0,
+        国际影响: Number(regimeDraft.value.国际影响) || 0,
+      },
+    },
+  ]
+
+  const replaced = regimeDraft.value.取代政权.trim()
+
+  if (replaced) {
+    // 政权更替：先建立新政权，再把被取代的政权连同全部领土交给它。
+    changes.push({
+      类型: '灭亡',
+      政权名称: replaced,
+      继承: '继承国',
+      继承国: [name],
+      原因: `由「${name}」取代`,
+    })
+  }
+
+  const created = await applyManualRegimeChange(changes)
+
+  if (created) {
+    regimeDraft.value = {
+      国家名称: '',
+      政体: '',
+      取代政权: '',
+      政治稳定: 0,
+      经济发展: 0,
+      国际影响: 0,
+      玩家操控: false,
+    }
+  }
+}
+
+/** 灭亡政权；`successor` 为空表示领土无主。 */
+const destroyRegime = async (name: string, successor = ''): Promise<boolean> => {
+  const target = name.trim()
+
+  if (!target) {
+    return false
+  }
+
+  const successorName = successor.trim()
+  const hint = successorName ? `领土将由「${successorName}」接管。` : '领土将变为无主。'
+
+  if (!window.confirm(`确定灭亡「${target}」吗？${hint}`)) {
+    return false
+  }
+
+  return applyManualRegimeChange([
+    {
+      类型: '灭亡',
+      政权名称: target,
+      继承: successorName ? '继承国' : '无主',
+      ...(successorName ? { 继承国: [successorName] } : {}),
+    },
+  ])
+}
+
+const destroyRegimeFromPanel = async () => {
+  await destroyRegime(destroyDraft.value.政权名称, destroyDraft.value.继承国)
+}
+
+const handleSidebarDestroy = async (item: FloatingCountrySidebarItem) => {
+  await destroyRegime(item.name)
+}
+
+/** 灭亡时不能把自己选成继承国。 */
+const successorOptions = computed(() =>
+  currentCountryNames.value.filter((name) => name !== destroyDraft.value.政权名称),
+)
+
+watch(
+  currentCountryNames,
+  (names) => {
+    if (!names.includes(destroyDraft.value.政权名称)) {
+      destroyDraft.value.政权名称 = names[0] ?? ''
+    }
+
+    if (destroyDraft.value.继承国 && !names.includes(destroyDraft.value.继承国)) {
+      destroyDraft.value.继承国 = ''
+    }
+  },
+  { immediate: true },
+)
+
+/* ------------------------------------------------------------------ *
+ * 领土划转：把某个政权的若干地区挑出来交给另一个政权
+ *
+ * 与 AI 的 `领土` 变更是同一条底层路径，只是这里由玩家点选；
+ * 边界情况（不存在、划走玩家国领土等）仍由 regime-change 里的校验兜住。
+ * ------------------------------------------------------------------ */
+
+interface TransferTerritoryRow {
+  code: string
+  level: TerritoryCodeLevel
+  name: string
+}
+
+/** 来源政权当前持有的全部地区，带名称与级别。 */
+const transferSourceTerritories = computed<TransferTerritoryRow[]>(() => {
+  const countries = getCountriesFromPayload(activeWorldPayload.value)
+  const index = findCountryIndex(countries, transferDraft.value.来源政权)
+  const record = index >= 0 && isRecord(countries[index]) ? countries[index] : null
+
+  if (!record) {
+    return []
+  }
+
+  const buckets = readTerritoryBuckets(record.领土)
+  const names = getTerritoryNamesFromPayload(activeWorldPayload.value)
+  const rows: TransferTerritoryRow[] = []
+
+  for (const level of CODE_LEVELS) {
+    for (const code of buckets.codes[level]) {
+      rows.push({ code, level, name: names[code] ?? code })
+    }
+  }
+
+  return rows.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN'))
+})
+
+const filteredTransferTerritories = computed(() => {
+  const keyword = transferDraft.value.关键词.trim().toLowerCase()
+
+  if (!keyword) {
+    return transferSourceTerritories.value
+  }
+
+  return transferSourceTerritories.value.filter(
+    (row) => row.name.toLowerCase().includes(keyword) || row.code.toLowerCase().includes(keyword),
+  )
+})
+
+const transferRecipientOptions = computed(() =>
+  currentCountryNames.value.filter((name) => name !== transferDraft.value.来源政权),
+)
+
+const transferSelectionCount = computed(() => transferDraft.value.选中.length)
+
+const isTransferSelected = (code: string) => transferDraft.value.选中.includes(code)
+
+const toggleTransferTerritory = (code: string) => {
+  const selected = transferDraft.value.选中
+
+  transferDraft.value.选中 = selected.includes(code)
+    ? selected.filter((item) => item !== code)
+    : [...selected, code]
+}
+
+const selectAllFilteredTerritories = () => {
+  const merged = new Set(transferDraft.value.选中)
+
+  for (const row of filteredTransferTerritories.value) {
+    merged.add(row.code)
+  }
+
+  transferDraft.value.选中 = [...merged]
+}
+
+const clearTransferSelection = () => {
+  transferDraft.value.选中 = []
+}
+
+const applyTerritoryTransfer = async () => {
+  const sourceName = transferDraft.value.来源政权
+  const targetName = transferDraft.value.接收方
+  const selection = transferDraft.value.选中
+
+  if (!sourceName || !targetName) {
+    errorText.value = '请选择来源政权与接收方。'
+    return
+  }
+
+  if (!selection.length) {
+    errorText.value = '请至少勾选一个地区。'
+    return
+  }
+
+  if (sourceName === targetName) {
+    errorText.value = '来源政权与接收方不能是同一个。'
+    return
+  }
+
+  const requested: RegimeTerritorySummary = {}
+
+  for (const row of transferSourceTerritories.value) {
+    if (!selection.includes(row.code)) {
+      continue
+    }
+
+    const bucket = requested[row.level]
+
+    if (bucket) {
+      bucket.push(row.code)
+    } else {
+      requested[row.level] = [row.code]
+    }
+  }
+
+  const transferred = await applyManualRegimeChange([
+    {
+      类型: '领土',
+      政权名称: targetName,
+      来源政权: sourceName,
+      领土: requested,
+    },
+  ])
+
+  if (transferred) {
+    transferDraft.value.选中 = []
+  }
+}
+
+watch(
+  () => transferDraft.value.来源政权,
+  () => {
+    transferDraft.value.选中 = []
+    transferDraft.value.关键词 = ''
+  },
+)
+
+watch(
+  currentCountryNames,
+  (names) => {
+    if (!names.includes(transferDraft.value.来源政权)) {
+      transferDraft.value.来源政权 = ''
+      transferDraft.value.选中 = []
+    }
+
+    if (transferDraft.value.接收方 && !names.includes(transferDraft.value.接收方)) {
+      transferDraft.value.接收方 = ''
+    }
+  },
+  { immediate: true },
+)
+
+/** 应用 AI 回复里的政权变更；这里不允许动玩家操控的政权。 */
+const applyAssistantRegimeChanges = (regimeChanges: readonly unknown[]) => {
+  const payload = activeWorldPayload.value
+
+  if (!payload || !regimeChanges.length) {
+    return
+  }
+
+  const result = applyRegimeChanges(
+    getCountriesFromPayload(payload),
+    activeCountryIndicators.value,
+    getCountryColorMapFromPayload(payload),
+    regimeChanges,
+    { nameIndex: territoryNameIndex.value },
+  )
+
+  activeCountryIndicators.value = result.indicators
+  writeCountryColorMap(payload, result.colorMap)
+
+  for (const line of result.applied) {
+    chatMessages.value.push({ role: 'assistant', content: line })
+  }
+
+  if (result.failed.length) {
+    chatMessages.value.push({
+      role: 'assistant',
+      content: `未应用的政权变更：${result.failed.join('；')}`,
+    })
+  }
+
+  for (const warning of result.warnings) {
+    chatMessages.value.push({ role: 'assistant', content: `⚠ ${warning}` })
+  }
+}
+
 const handleAssistantResponse = async (responseText: string) => {
   const jsonText = extractJsonFromText(responseText)
 
@@ -1478,13 +2014,14 @@ const handleAssistantResponse = async (responseText: string) => {
     return
   }
 
-  const entries: unknown[] = Array.isArray(parsed) ? parsed : [parsed]
+  const { indicatorEntries, regimeChanges } = splitAssistantChangePayload(parsed)
+  const entries: unknown[] = indicatorEntries
   // 普通叙述里也可能出现示例 JSON；只有带变更字段的内容才进入应用流程。
   const looksLikeChangePayload = entries.some(
     (entry) => isRecord(entry) && ('国家指标' in entry || '国家名称' in entry || '描述' in entry),
   )
 
-  if (!looksLikeChangePayload) {
+  if (!looksLikeChangePayload && !regimeChanges.length) {
     return
   }
 
@@ -1600,6 +2137,9 @@ const handleAssistantResponse = async (responseText: string) => {
       content: `已应用指标变更：${countryName}；${desc || '无描述'}；${oldSummary}；${newSummary}${extraSummary ? `；${extraSummary}` : ''}`,
     })
   }
+
+  // 政权变更要在持久化之前落库，这样存档与简报拿到的是同一份世界。
+  applyAssistantRegimeChanges(regimeChanges)
 
   // 持久化
   refreshWorldContextMessage()
@@ -2205,6 +2745,212 @@ const selectedSnapshotLabel = computed(() => {
           </p>
         </section>
 
+        <section v-if="hasCurrentCountries" class="status-card panel regime-panel">
+          <h2 class="status-title">政权管理</h2>
+          <p class="status-note">
+            推演中可以直接建立或灭亡政权。领土按编号在政权之间迁移，改动会写入存档并进入下一轮简报。
+          </p>
+
+          <form class="regime-form" aria-label="建立政权" @submit.prevent="createRegimeFromPanel">
+            <label class="regime-field">
+              <span class="regime-field-label">新政权名称</span>
+              <input
+                v-model="regimeDraft.国家名称"
+                class="regime-input"
+                type="text"
+                placeholder="例如：波兰人民共和国"
+              />
+            </label>
+
+            <label class="regime-field">
+              <span class="regime-field-label">政体</span>
+              <input
+                v-model="regimeDraft.政体"
+                class="regime-input"
+                type="text"
+                placeholder="例如：人民民主共和国"
+              />
+            </label>
+
+            <label class="regime-field">
+              <span class="regime-field-label">领土来源</span>
+              <select v-model="regimeDraft.取代政权" class="regime-input">
+                <option value="">暂不划入（之后让 AI 补）</option>
+                <option v-for="name in currentCountryNames" :key="name" :value="name">
+                  取代「{{ name }}」：它灭亡，全部领土转给新政权
+                </option>
+              </select>
+            </label>
+
+            <div class="regime-indicators">
+              <label class="regime-field">
+                <span class="regime-field-label">政治稳定</span>
+                <input
+                  v-model.number="regimeDraft.政治稳定"
+                  class="regime-input"
+                  type="number"
+                  min="-100"
+                  max="100"
+                  step="1"
+                />
+              </label>
+              <label class="regime-field">
+                <span class="regime-field-label">经济发展</span>
+                <input
+                  v-model.number="regimeDraft.经济发展"
+                  class="regime-input"
+                  type="number"
+                  min="-100"
+                  max="100"
+                  step="1"
+                />
+              </label>
+              <label class="regime-field">
+                <span class="regime-field-label">国际影响</span>
+                <input
+                  v-model.number="regimeDraft.国际影响"
+                  class="regime-input"
+                  type="number"
+                  min="-100"
+                  max="100"
+                  step="1"
+                />
+              </label>
+            </div>
+
+            <label class="regime-checkbox">
+              <input v-model="regimeDraft.玩家操控" type="checkbox" />
+              <span>由玩家操控（AI控制: false）</span>
+            </label>
+
+            <button
+              class="secondary-button regime-submit"
+              type="submit"
+              :disabled="isSending || !regimeDraft.国家名称.trim()"
+            >
+              建立政权
+            </button>
+          </form>
+
+          <hr class="regime-divider" />
+
+          <form class="regime-form" aria-label="灭亡政权" @submit.prevent="destroyRegimeFromPanel">
+            <label class="regime-field">
+              <span class="regime-field-label">要灭亡的政权</span>
+              <select v-model="destroyDraft.政权名称" class="regime-input">
+                <option v-for="name in currentCountryNames" :key="name" :value="name">
+                  {{ name }}
+                </option>
+              </select>
+            </label>
+
+            <label class="regime-field">
+              <span class="regime-field-label">领土继承</span>
+              <select v-model="destroyDraft.继承国" class="regime-input">
+                <option value="">无主（直接移除）</option>
+                <option v-for="name in successorOptions" :key="name" :value="name">
+                  {{ name }} 接管全部领土
+                </option>
+              </select>
+            </label>
+
+            <button
+              class="secondary-button regime-submit regime-submit-danger"
+              type="submit"
+              :disabled="isSending || !destroyDraft.政权名称"
+            >
+              灭亡政权
+            </button>
+          </form>
+        </section>
+
+        <section v-if="hasCurrentCountries" class="status-card panel regime-panel">
+          <h2 class="status-title">领土划转</h2>
+          <p class="status-note">
+            选来源政权和地区，再选接收方。地区名来自剧本，没有名称时显示编号。
+          </p>
+
+          <form class="regime-form" aria-label="领土划转" @submit.prevent="applyTerritoryTransfer">
+            <label class="regime-field">
+              <span class="regime-field-label">来源政权</span>
+              <select v-model="transferDraft.来源政权" class="regime-input">
+                <option value="">选择政权</option>
+                <option v-for="name in currentCountryNames" :key="name" :value="name">
+                  {{ name }}
+                </option>
+              </select>
+            </label>
+
+            <p v-if="transferDraft.来源政权" class="regime-note">
+              共 {{ transferSourceTerritories.length }} 条领土，已选 {{ transferSelectionCount }} 条
+            </p>
+
+            <template v-if="transferSourceTerritories.length">
+              <input
+                v-model="transferDraft.关键词"
+                class="regime-input"
+                type="search"
+                placeholder="搜索地区名或编号"
+              />
+
+              <div class="transfer-actions">
+                <button
+                  class="ghost-button transfer-action"
+                  type="button"
+                  @click="selectAllFilteredTerritories"
+                >
+                  全选搜索结果
+                </button>
+                <button
+                  class="ghost-button transfer-action"
+                  type="button"
+                  @click="clearTransferSelection"
+                >
+                  清空选择
+                </button>
+              </div>
+
+              <ul class="transfer-list">
+                <li v-for="row in filteredTransferTerritories" :key="row.code">
+                  <label class="transfer-option">
+                    <input
+                      type="checkbox"
+                      :checked="isTransferSelected(row.code)"
+                      @change="toggleTransferTerritory(row.code)"
+                    />
+                    <span class="transfer-option-name">{{ row.name }}</span>
+                    <span class="transfer-option-code">{{ row.code }}</span>
+                  </label>
+                </li>
+              </ul>
+
+              <p v-if="!filteredTransferTerritories.length" class="regime-note">没有匹配的地区。</p>
+
+              <label class="regime-field">
+                <span class="regime-field-label">接收方</span>
+                <select v-model="transferDraft.接收方" class="regime-input">
+                  <option value="">选择接收政权</option>
+                  <option v-for="name in transferRecipientOptions" :key="name" :value="name">
+                    {{ name }}
+                  </option>
+                </select>
+              </label>
+
+              <button
+                class="secondary-button regime-submit"
+                type="submit"
+                :disabled="isSending || !transferSelectionCount || !transferDraft.接收方"
+              >
+                划转 {{ transferSelectionCount }} 个地区
+              </button>
+            </template>
+
+            <p v-else-if="transferDraft.来源政权" class="regime-note">
+              这个政权没有可划转的地区编号（例如手绘国土或纯自定义多边形）。
+            </p>
+          </form>
+        </section>
+
         <section class="status-card panel">
           <h2 class="status-title">当前配置</h2>
           <strong>{{ settingsSummary }}</strong>
@@ -2233,7 +2979,9 @@ const selectedSnapshotLabel = computed(() => {
       :items="countrySidebarItems"
       title="国家列表"
       empty-text="当前世界没有国家数据"
+      :destroyable="!isSending"
       @edit-stat="handleEditStat"
+      @destroy="handleSidebarDestroy"
     />
   </main>
 </template>
@@ -2268,6 +3016,13 @@ const selectedSnapshotLabel = computed(() => {
 .main-column {
   flex: 1;
   min-height: 0;
+}
+
+/* 侧栏卡片比主列高，单独允许滚动，避免「政权管理」被裁掉。 */
+.side-column {
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .panel {
@@ -2333,6 +3088,140 @@ const selectedSnapshotLabel = computed(() => {
   color: var(--color-text);
   opacity: 0.8;
   line-height: 1.6;
+}
+
+.regime-panel {
+  gap: 14px;
+}
+
+.regime-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.regime-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.regime-field-label {
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: var(--color-text);
+  opacity: 0.72;
+}
+
+.regime-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-background);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.regime-input:focus-visible {
+  outline: none;
+  border-color: var(--color-heading);
+}
+
+.regime-indicators {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.regime-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--color-text);
+  opacity: 0.85;
+}
+
+.regime-submit {
+  align-self: flex-start;
+}
+
+.regime-submit-danger:hover:not(:disabled) {
+  border-color: #d64545;
+  color: #d64545;
+}
+
+.regime-divider {
+  width: 100%;
+  margin: 0;
+  border: 0;
+  border-top: 1px dashed var(--color-border);
+}
+
+.regime-note {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--color-text);
+  opacity: 0.75;
+}
+
+.transfer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.transfer-action {
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.transfer-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 4px;
+  max-height: 220px;
+  overflow-y: auto;
+  list-style: none;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-background);
+}
+
+.transfer-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.transfer-option:hover {
+  background: color-mix(in srgb, var(--color-border) 35%, transparent);
+}
+
+.transfer-option-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.transfer-option-code {
+  flex-shrink: 0;
+  font-size: 11px;
+  opacity: 0.6;
+  font-variant-numeric: tabular-nums;
 }
 
 .chat-layout {

@@ -9,12 +9,14 @@ const props = withDefaults(
     code: string
     /** 附加说明：国家显示英文名，市级行政区显示所属省份 */
     detail?: string
+    /** 强调色：存档模式下跟随所点地块的政权代表色 */
+    accent?: string
     x: number
     y: number
     /** 预留的情报列表，后续接 AI 接口时填入 */
     news?: { id: string | number; title: string; url: string }[]
   }>(),
-  { detail: '', news: () => [] },
+  { detail: '', accent: '', news: () => [] },
 )
 
 const emit = defineEmits<{
@@ -68,7 +70,12 @@ function openUrl(url: string): void {
     v-if="props.visible"
     ref="rootEl"
     class="info-panel"
-    :style="{ left: `${props.x}px`, top: `${props.y}px` }"
+    :style="{
+      left: `${props.x}px`,
+      top: `${props.y}px`,
+      borderLeftColor: props.accent || undefined,
+      borderLeftWidth: props.accent ? '3px' : undefined,
+    }"
   >
     <div class="info-name">{{ props.name }}</div>
     <div class="info-code">{{ props.code }}</div>

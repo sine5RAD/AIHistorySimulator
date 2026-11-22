@@ -1,105 +1,18 @@
 import { isRecord } from './country-data'
+import { summarizeTerritoryBrief, summarizeTerritoryDetail } from './territory-summary'
 
 const readText = (value: unknown): string => (typeof value === 'string' ? value.trim() : '')
 
 const readNumber = (value: unknown): number | undefined =>
   typeof value === 'number' && Number.isFinite(value) ? value : undefined
 
-const COUNTED_TERRITORY_LEVELS = ['adm1', 'adm2', 'adm3'] as const
-
 /**
- * 把领土压缩成适合发给模型的摘要。
+ * 简报用的领土摘要。
  *
- * 兼容两种数据：
- * - 事件驱动现在保存的紧凑版 `{ 总数, country: [...], adm1: [...] }`；
- * - 旧存档里的完整数组 `[{ 名称, 代码, 级别, 区域? }]`。
- *
- * 逐条地区编号对叙事推演帮助不大，这里只保留总数、国家级代码与各级数量。
+ * 只保留总数、国家级代码与各级数量；具体地区编号太长，
+ * 逐条塞进每轮请求会随政权数量线性膨胀。
  */
-export const summarizeTerritory = (value: unknown): Record<string, unknown> | null => {
-  if (Array.isArray(value)) {
-    const summary: Record<string, unknown> = { 总数: value.length }
-    const countryCodes: string[] = []
-    const levelCounts: Record<string, number> = {}
-    let customAreaCount = 0
-
-    for (const item of value) {
-      if (!isRecord(item)) {
-        continue
-      }
-
-      const level = readText(item.级别)
-      const code = readText(item.代码)
-      const hasCustomArea = Array.isArray(item.区域) && item.区域.length > 0
-
-      if (level) {
-        levelCounts[level] = (levelCounts[level] ?? 0) + 1
-      } else if (hasCustomArea) {
-        customAreaCount += 1
-      }
-
-      if (code && (level === 'country' || (!level && /^[A-Z]{3}$/i.test(code)))) {
-        countryCodes.push(code.toUpperCase())
-      }
-    }
-
-    if (countryCodes.length) {
-      summary.国家级代码 = countryCodes
-    }
-
-    for (const level of COUNTED_TERRITORY_LEVELS) {
-      const count = levelCounts[level]
-
-      if (count) {
-        summary[`${level}数量`] = count
-      }
-    }
-
-    if (customAreaCount) {
-      summary.自定义区域数量 = customAreaCount
-    }
-
-    return summary
-  }
-
-  if (!isRecord(value)) {
-    return null
-  }
-
-  const summary: Record<string, unknown> = {}
-  const total = readNumber(value.总数)
-
-  if (total !== undefined) {
-    summary.总数 = total
-  }
-
-  if (Array.isArray(value.country)) {
-    const codes = value.country
-      .map(readText)
-      .filter((code) => code.length > 0)
-      .map((code) => code.toUpperCase())
-
-    if (codes.length) {
-      summary.国家级代码 = codes
-    }
-  }
-
-  for (const level of COUNTED_TERRITORY_LEVELS) {
-    const list = value[level]
-
-    if (Array.isArray(list) && list.length) {
-      summary[`${level}数量`] = list.length
-    }
-  }
-
-  const customAreaCount = readNumber(value.自定义区域数量)
-
-  if (customAreaCount) {
-    summary.自定义区域数量 = customAreaCount
-  }
-
-  return Object.keys(summary).length ? summary : null
-}
+export const summarizeTerritory = summarizeTerritoryBrief
 
 const readLeaderBriefs = (value: unknown): Array<Record<string, string>> => {
   if (!Array.isArray(value)) {
@@ -185,10 +98,18 @@ export const toBriefCountry = (country: Record<string, unknown>): Record<string,
   return brief
 }
 
-/** 按需详情：保留完整精简档案，但把领土换回摘要，避免一次附带上千条地区编号。 */
-export const toDetailCountry = (country: Record<string, unknown>): Record<string, unknown> => {
+/**
+ * 按需详情：保留完整精简档案，并把领土换成「详情版」摘要。
+ *
+ * 与简报版的关键区别是**多给 `adm1` 的实际编号**：
+ * AI 只有在详情档里见过编号，才能在 `政权变更` 的 `领土` 字段里填出真实编号。
+ */
+export const toDetailCountry = (
+  country: Record<string, unknown>,
+  nameIndex?: Record<string, string>,
+): Record<string, unknown> => {
   const { 领土: territoryValue, ...rest } = country
-  const territory = summarizeTerritory(territoryValue)
+  const territory = summarizeTerritoryDetail(territoryValue, nameIndex)
 
   return territory ? { ...rest, 领土: territory } : rest
 }
@@ -203,6 +124,7 @@ export const buildBriefCountries = (
 export const buildDetailCountries = (
   countries: readonly unknown[],
   matchedNames: readonly string[],
+  nameIndex?: Record<string, string>,
 ): Array<Record<string, unknown>> => {
   const names = new Set(matchedNames.map((name) => name.trim()).filter((name) => name.length > 0))
 
@@ -213,5 +135,5 @@ export const buildDetailCountries = (
   return countries
     .filter((country): country is Record<string, unknown> => isRecord(country))
     .filter((country) => names.has(readText(country.国家名称)))
-    .map(toDetailCountry)
+    .map((country) => toDetailCountry(country, nameIndex))
 }

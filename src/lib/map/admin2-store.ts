@@ -147,6 +147,19 @@ export class Admin2Store {
     return Boolean(this.options.index?.countries)
   }
 
+  /** 本地分块目录里收录了哪些国家，按索引顺序返回。 */
+  indexedCountries(): string[] {
+    return Object.keys(this.options.index?.countries ?? {})
+  }
+
+  /** 调整内存里最多保留的分块数；存档政治地图需要一次保留整份世界。 */
+  setMaxCountries(max: number): void {
+    if (!Number.isFinite(max)) {
+      return
+    }
+    this.options.maxCountries = Math.max(1, Math.round(max))
+  }
+
   /** 该国家是否在本地分块目录里 */
   hasLocal(iso: string): boolean {
     return Boolean(this.options.index?.countries?.[iso])

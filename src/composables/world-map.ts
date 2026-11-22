@@ -1,4 +1,4 @@
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import clickSoundUrl from '@/assets/sounds/click.mp3'
 import scannerSoundUrl from '@/assets/sounds/scanner.m4a'
@@ -14,6 +14,16 @@ import {
   worldToScreen,
   type Camera,
 } from '@/lib/map/projection'
+import { getFeatureTerritoryCode } from '@/lib/map/territory-code'
+import {
+  EVENT_DRIVE_SAVE_STORAGE_KEYS,
+  buildEventDriveSaveMap,
+  readActiveEventDriveSave,
+  resolveSaveTerritory,
+  type EventDriveSaveMap,
+  type SaveAreaGroup,
+  type SaveTerritoryUnit,
+} from '@/utils/event-drive-save'
 import {
   isRawFeatureCollection,
   normalizeWorldFeatures,
@@ -70,10 +80,29 @@ const COLOR_OUTLINE_GLOW = '#3b82f6'
 const COLOR_OUTLINE_INNER = '#93c5fd'
 /** 市级行政区：只描边，保持和国界一致的线框风格 */
 const COLOR_ADM2_STROKE = 'rgba(96, 165, 250, 0.42)'
+/** 存档模式下未被任何政权占用的陆地：只铺一层中性底色，不再描现代国界 */
+const COLOR_SAVE_LAND_FILL = 'rgba(30, 41, 59, 0.55)'
+/** 存档领地的填色透明度；描边比填色更实，边界更清楚 */
+const SAVE_FILL_ALPHA = 0.6
+const SAVE_STROKE_ALPHA = 0.92
+const SAVE_STROKE_WIDTH = 0.8
+/** 存档模式下要同时保留整份世界的分块，不能再按「一屏国家」淘汰 */
+const SAVE_MAX_LOADED_ADM2 = 256
+/** 低于这个屏幕面积的地区不画，避免在低倍率下把上万个小区块都送进 canvas */
+const SAVE_MIN_FEATURE_AREA_PX = 0.45
+/**
+ * 低倍率下的政治地图预先烘焙成一张世界纹理：
+ * 整份存档有 4,000 多个行政区，逐块矢量化每次缩放要重画上千条路径；
+ * 烘焙后世界视图和拖拽只需要一次 drawImage，放大到该倍率以上再切回矢量。
+ */
+const SAVE_TEXTURE_WIDTH = 4096
+const SAVE_TEXTURE_HEIGHT = 2048
+const SAVE_TEXTURE_MAX_ZOOM = 3
+const SAVE_TEXTURE_BUILD_DELAY_MS = 180
 
 export type WorldMapLoadState = 'loading' | 'ready' | 'error'
 
-export type MapFeatureKind = 'country' | 'adm2'
+export type MapFeatureKind = 'country' | 'adm2' | 'area'
 
 export interface WorldMapOptions {
   /** 信息面板的真实高度，用于摆放连接线终点；不传则按 58px 估算 */
@@ -147,10 +176,35 @@ export function useWorldMap(options: WorldMapOptions = {}) {
   /** 是否已经放大到市级层级，页面用它切换底部提示文案 */
   const cityMode = ref(false)
 
+  /** 事件驱动页有存档时，世界地图改用存档里的政权领地着色 */
+  const saveMode = ref(false)
+  const saveLabel = ref('')
+  const saveRegimeCount = ref(0)
+  const saveUnitCount = ref(0)
+  const saveAreaCount = ref(0)
+  const saveAdminTotal = ref(0)
+  const saveAdminLoaded = ref(0)
+  /** 信息面板的强调色，跟随所点地块的政权代表色 */
+  const infoAccent = ref('')
+
+  const saveAdminLoading = computed(
+    () =>
+      saveMode.value && saveAdminTotal.value > 0 && saveAdminLoaded.value < saveAdminTotal.value,
+  )
+
   let countryFeatures: WorldMapFeature[] = []
   let adm2Store: Admin2Store | null = null
 
   const pathCache = new FeaturePathCache()
+  let saveMap: EventDriveSaveMap | null = null
+  let saveAdminIsos: string[] = []
+  let lastSaveSignature = ''
+  let saveDirtyTimer: number | null = null
+  let saveRefreshTimer: number | null = null
+  let saveTextureTimer: number | null = null
+  let saveTextureCanvas: HTMLCanvasElement | null = null
+  let saveTextureKey = ''
+  let areaGroupByFeature = new WeakMap<WorldMapFeature, SaveAreaGroup>()
 
   let hovered: Selection | null = null
   let selected: Selection | null = null
@@ -252,6 +306,396 @@ export function useWorldMap(options: WorldMapOptions = {}) {
     offsetY += moved.lat - before.lat
     clampOffsetY()
     cityMode.value = zoom >= CITY_ZOOM
+  }
+
+  /* ---------- 事件驱动存档 ---------- */
+
+  /** 把当前存档的领土变化压成一个短签名，避免只改聊天记录时重建整张政治地图。 */
+  function saveSignature(map: EventDriveSaveMap): string {
+    let hash = 2166136261
+    const feed = (text: string): void => {
+      for (let index = 0; index < text.length; index += 1) {
+        hash ^= text.charCodeAt(index)
+        hash = Math.imul(hash, 16777619)
+      }
+    }
+
+    feed(map.save.key)
+
+    for (const unit of map.units) {
+      feed(unit.code)
+      feed('|')
+      feed(unit.countryCode)
+      feed('|')
+      feed(unit.level)
+      feed('|')
+      feed(unit.regimeName)
+      feed('|')
+      feed(unit.color)
+      feed('|')
+      feed(unit.name)
+    }
+
+    for (const group of map.areaGroups) {
+      feed(group.regimeName)
+      feed(group.color)
+      for (const area of group.areas) {
+        for (const point of area.vertices) {
+          feed(`${point[0]},${point[1]};`)
+        }
+      }
+    }
+
+    return `${map.units.length}:${map.areaGroups.length}:${hash.toString(36)}`
+  }
+
+  function clearSaveTexture(): void {
+    if (saveTextureTimer !== null) {
+      window.clearTimeout(saveTextureTimer)
+      saveTextureTimer = null
+    }
+
+    saveTextureCanvas = null
+    saveTextureKey = ''
+  }
+
+  function scheduleSaveTexture(delay = SAVE_TEXTURE_BUILD_DELAY_MS): void {
+    if (saveTextureTimer !== null) {
+      return
+    }
+
+    saveTextureTimer = window.setTimeout(() => {
+      saveTextureTimer = null
+      buildSaveTexture()
+    }, delay)
+  }
+
+  /**
+   * 把整个存档政治地图烘焙成一张等距圆柱纹理。
+   *
+   * 构建期间临时切换模块内的相机参数，构建完立刻恢复；
+   * 因此调用方必须保证它不在绘制帧内部被调用（通过 setTimeout 调度）。
+   */
+  function buildSaveTexture(): void {
+    if (!saveMode.value || !saveMap || countryFeatures.length === 0) {
+      return
+    }
+
+    if (saveAdminTotal.value > 0 && saveAdminLoaded.value < saveAdminTotal.value) {
+      return
+    }
+
+    const key = `${lastSaveSignature}|${saveAdminLoaded.value}`
+    if (saveTextureCanvas && saveTextureKey === key) {
+      return
+    }
+
+    const canvas = saveTextureCanvas ?? document.createElement('canvas')
+    const context = canvas.getContext('2d')
+
+    if (!context) {
+      return
+    }
+
+    if (canvas.width !== SAVE_TEXTURE_WIDTH || canvas.height !== SAVE_TEXTURE_HEIGHT) {
+      canvas.width = SAVE_TEXTURE_WIDTH
+      canvas.height = SAVE_TEXTURE_HEIGHT
+    }
+
+    context.setTransform(1, 0, 0, 1, 0, 0)
+    context.clearRect(0, 0, SAVE_TEXTURE_WIDTH, SAVE_TEXTURE_HEIGHT)
+    context.lineJoin = 'round'
+    context.lineCap = 'round'
+
+    const previous = {
+      width,
+      height,
+      scaleX,
+      scaleY,
+      cx,
+      cy,
+      zoom,
+      offsetX,
+      offsetY,
+      dpr,
+    }
+
+    try {
+      width = SAVE_TEXTURE_WIDTH
+      height = SAVE_TEXTURE_HEIGHT
+      scaleX = SAVE_TEXTURE_WIDTH / 360
+      scaleY = SAVE_TEXTURE_HEIGHT / 180
+      cx = SAVE_TEXTURE_WIDTH / 2
+      cy = SAVE_TEXTURE_HEIGHT / 2
+      zoom = 1
+      offsetX = 0
+      offsetY = 0
+      dpr = 1
+
+      drawSaveLandBase(context)
+      drawSaveCountryUnits(context)
+      drawSaveAreaGroups(context)
+      drawSaveAdminUnits(context)
+    } catch (error) {
+      // 纹理烘焙失败时退回逐块矢量绘制，不影响政治地图本身。
+      saveTextureCanvas = null
+      saveTextureKey = ''
+      console.warn('Failed to bake save map texture', error)
+      return
+    } finally {
+      width = previous.width
+      height = previous.height
+      scaleX = previous.scaleX
+      scaleY = previous.scaleY
+      cx = previous.cx
+      cy = previous.cy
+      zoom = previous.zoom
+      offsetX = previous.offsetX
+      offsetY = previous.offsetY
+      dpr = previous.dpr
+    }
+
+    saveTextureCanvas = canvas
+    saveTextureKey = key
+    markDirty()
+  }
+
+  function drawSaveTexture(ctx: CanvasRenderingContext2D): boolean {
+    const texture = saveTextureCanvas
+
+    if (!texture) {
+      return false
+    }
+
+    const current = camera()
+    const unitX = scaleX * zoom
+    const unitY = scaleY * zoom
+    const drawWidth = 360 * unitX
+    const drawHeight = 180 * unitY
+
+    if (drawWidth <= 0 || drawHeight <= 0) {
+      return false
+    }
+
+    ctx.save()
+    ctx.imageSmoothingEnabled = true
+    ctx.imageSmoothingQuality = 'high'
+
+    for (const shift of LONGITUDE_SHIFTS) {
+      const topLeft = worldToScreen(current, -180, 90, shift)
+
+      if (
+        topLeft.x > width ||
+        topLeft.y > height ||
+        topLeft.x + drawWidth < 0 ||
+        topLeft.y + drawHeight < 0
+      ) {
+        continue
+      }
+
+      ctx.drawImage(texture, topLeft.x, topLeft.y, drawWidth, drawHeight)
+    }
+
+    ctx.restore()
+    return true
+  }
+
+  function syncSaveAdminProgress(): void {
+    if (!saveMode.value || !adm2Store) {
+      saveAdminTotal.value = 0
+      saveAdminLoaded.value = 0
+      return
+    }
+
+    saveAdminTotal.value = saveAdminIsos.length
+    let loaded = 0
+
+    for (const iso of saveAdminIsos) {
+      const state = adm2Store.state(iso)
+
+      if (state === 'ready' || state === 'missing') {
+        loaded += 1
+      }
+    }
+
+    saveAdminLoaded.value = loaded
+  }
+
+  function clearSaveDirtyTimer(): void {
+    if (saveDirtyTimer !== null) {
+      window.clearTimeout(saveDirtyTimer)
+      saveDirtyTimer = null
+    }
+  }
+
+  /** 分块陆续返回时不要每块都重建整张缓存，攒一小段时间再画。 */
+  function scheduleSaveDirty(delay = 160): void {
+    if (saveDirtyTimer !== null) {
+      return
+    }
+
+    saveDirtyTimer = window.setTimeout(() => {
+      saveDirtyTimer = null
+      markDirty()
+      refreshHover()
+    }, delay)
+  }
+
+  /** 有下级行政区编号时，按国家代码只加载相关分块；推导不出国家时全量加载。 */
+  function computeSaveAdminCountries(map: EventDriveSaveMap): string[] {
+    if (!adm2Store) {
+      return []
+    }
+
+    const needed = new Map<string, number>()
+    let hasUnknownCountry = false
+
+    for (const unit of map.units) {
+      if (unit.level === 'country') {
+        continue
+      }
+
+      if (!unit.countryCode) {
+        hasUnknownCountry = true
+        continue
+      }
+
+      needed.set(unit.countryCode, (needed.get(unit.countryCode) ?? 0) + 1)
+    }
+
+    const indexed = adm2Store.indexedCountries()
+
+    if (hasUnknownCountry) {
+      return indexed
+    }
+
+    return indexed
+      .filter((iso) => needed.has(iso))
+      .sort((left, right) => (needed.get(right) ?? 0) - (needed.get(left) ?? 0))
+  }
+
+  function ensureSaveAdmin2(): void {
+    if (!adm2Store || !saveMap) {
+      saveAdminIsos = []
+      syncSaveAdminProgress()
+      return
+    }
+
+    saveAdminIsos = computeSaveAdminCountries(saveMap)
+    syncSaveAdminProgress()
+
+    for (const iso of saveAdminIsos) {
+      adm2Store.ensure(iso)
+    }
+
+    syncSaveAdminProgress()
+    scheduleSaveTexture()
+  }
+
+  function resetSaveState(): void {
+    saveMap = null
+    saveLabel.value = ''
+    saveRegimeCount.value = 0
+    saveUnitCount.value = 0
+    saveAreaCount.value = 0
+    saveAdminIsos = []
+    saveAdminTotal.value = 0
+    saveAdminLoaded.value = 0
+    infoAccent.value = ''
+    lastSaveSignature = ''
+    areaGroupByFeature = new WeakMap()
+    clearSaveTexture()
+    adm2Store?.setMaxCountries(MAX_LOADED_ADM2)
+  }
+
+  /**
+   * 重新读取事件驱动页当前加载的存档。
+   *
+   * 没有存档、或存档里没有任何能落到地图上的领土时，保持原来的现代国界；
+   * 有存档则整张地图改成按政权颜色填充的政治地图。
+   */
+  function refreshEventDriveSave(): void {
+    if (countryFeatures.length === 0) {
+      return
+    }
+
+    const snapshot = readActiveEventDriveSave()
+    const nextSaveMap = snapshot ? buildEventDriveSaveMap(snapshot) : null
+
+    if (!nextSaveMap || (nextSaveMap.units.length === 0 && nextSaveMap.areaGroups.length === 0)) {
+      const wasSaveMode = saveMode.value
+      resetSaveState()
+      saveMode.value = false
+
+      if (wasSaveMode) {
+        hideInfoWindow()
+        markDirty()
+        refreshHover()
+      }
+
+      return
+    }
+
+    const signature = saveSignature(nextSaveMap)
+    const changed = signature !== lastSaveSignature
+    const wasSaveMode = saveMode.value
+
+    saveMode.value = true
+
+    if (changed) {
+      saveMap = nextSaveMap
+      areaGroupByFeature = new WeakMap(
+        nextSaveMap.areaGroups.map((group) => [group.feature, group]),
+      )
+      clearSaveTexture()
+    }
+
+    saveLabel.value = nextSaveMap.label
+    saveRegimeCount.value = nextSaveMap.regimes.length
+    saveUnitCount.value = nextSaveMap.units.length
+    saveAreaCount.value = nextSaveMap.areaGroups.reduce(
+      (total, group) => total + group.areas.length,
+      0,
+    )
+    lastSaveSignature = signature
+
+    adm2Store?.setMaxCountries(SAVE_MAX_LOADED_ADM2)
+    ensureSaveAdmin2()
+    scheduleSaveTexture()
+
+    if (changed) {
+      if (wasSaveMode) {
+        hideInfoWindow()
+      }
+      refreshHover()
+      markDirty()
+    }
+  }
+
+  function scheduleSaveRefresh(delay = 120): void {
+    if (saveRefreshTimer !== null) {
+      return
+    }
+
+    saveRefreshTimer = window.setTimeout(() => {
+      saveRefreshTimer = null
+
+      if (loadState.value === 'ready') {
+        refreshEventDriveSave()
+      }
+    }, delay)
+  }
+
+  function saveUnitForFeature(feature: WorldMapFeature): SaveTerritoryUnit | null {
+    if (!saveMode.value || !saveMap || areaGroupByFeature.has(feature)) {
+      return null
+    }
+
+    return resolveSaveTerritory(saveMap, getFeatureTerritoryCode(feature), feature.iso)
+  }
+
+  function saveAreaForFeature(feature: WorldMapFeature): SaveAreaGroup | null {
+    return saveMode.value ? (areaGroupByFeature.get(feature) ?? null) : null
   }
 
   /* ---------- 绘制工具 ---------- */
@@ -453,11 +897,188 @@ export function useWorldMap(options: WorldMapOptions = {}) {
     drawFeatures(ctx, features, { stroke: COLOR_ADM2_STROKE, width: 1 })
   }
 
+  /** 存档模式：先把整块陆地铺成中性底色，现代国界一条都不画。 */
+  function drawSaveLandBase(ctx: CanvasRenderingContext2D): void {
+    drawFeatures(ctx, countryFeatures, { fill: COLOR_SAVE_LAND_FILL })
+  }
+
+  /** 存档模式：整国归属于某个政权时，用政权代表色填满该国。 */
+  function drawSaveCountryUnits(ctx: CanvasRenderingContext2D): void {
+    const current = camera()
+    const lineWidth = lineWidthFor(current, SAVE_STROKE_WIDTH)
+
+    ctx.save()
+    ctx.lineJoin = 'round'
+    ctx.lineCap = 'round'
+
+    for (const shift of LONGITUDE_SHIFTS) {
+      const view = cullBounds(shift)
+      applyCameraTransform(ctx, shift)
+
+      for (const feature of countryFeatures) {
+        if (!boundsIntersect(feature.bounds, view)) {
+          continue
+        }
+
+        const unit = saveUnitForFeature(feature)
+
+        if (!unit || unit.level !== 'country') {
+          continue
+        }
+
+        const path = pathCache.get(feature)
+
+        if (!path) {
+          continue
+        }
+
+        ctx.fillStyle = unit.color
+        ctx.globalAlpha = SAVE_FILL_ALPHA
+        ctx.fill(path, 'evenodd')
+
+        ctx.strokeStyle = unit.color
+        ctx.globalAlpha = SAVE_STROKE_ALPHA
+        ctx.lineWidth = lineWidth
+        ctx.stroke(path)
+      }
+    }
+
+    ctx.restore()
+  }
+
+  /** 存档模式：世界生成导出的手绘国土多边形。 */
+  function drawSaveAreaGroups(ctx: CanvasRenderingContext2D): void {
+    const groups = saveMap?.areaGroups
+
+    if (!groups?.length) {
+      return
+    }
+
+    const current = camera()
+    const lineWidth = lineWidthFor(current, 1.1)
+
+    ctx.save()
+    ctx.lineJoin = 'round'
+
+    for (const group of groups) {
+      const path = pathCache.get(group.feature)
+
+      if (!path) {
+        continue
+      }
+
+      for (const shift of LONGITUDE_SHIFTS) {
+        if (!boundsIntersect(group.bounds, cullBounds(shift))) {
+          continue
+        }
+
+        applyCameraTransform(ctx, shift)
+        ctx.fillStyle = group.color
+        ctx.strokeStyle = group.color
+        ctx.globalAlpha = 0.48
+        ctx.fill(path, 'evenodd')
+        ctx.globalAlpha = 0.9
+        ctx.lineWidth = lineWidth
+        ctx.stroke(path)
+      }
+    }
+
+    ctx.restore()
+  }
+
+  /**
+   * 存档模式：一级 / 二级行政区按政权颜色填充。
+   *
+   * 只画已经加载、并且确实被存档指派了政权的区块；
+   * 未指派的地区保持中性底色，不再画现代行政区界线。
+   */
+  function drawSaveAdminUnits(ctx: CanvasRenderingContext2D): void {
+    if (!adm2Store) {
+      return
+    }
+
+    const chunks = adm2Store.list()
+
+    if (!chunks.length) {
+      return
+    }
+
+    const current = camera()
+    const unitX = scaleX * zoom
+    const unitY = scaleY * zoom
+    const lineWidth = lineWidthFor(current, 0.7)
+
+    ctx.save()
+    ctx.lineJoin = 'round'
+    ctx.lineCap = 'round'
+
+    for (const shift of LONGITUDE_SHIFTS) {
+      const view = cullBounds(shift)
+      applyCameraTransform(ctx, shift)
+
+      for (const chunk of chunks) {
+        if (!boundsIntersect(chunk.bounds, view)) {
+          continue
+        }
+
+        for (const feature of chunk.features) {
+          if (!boundsIntersect(feature.bounds, view)) {
+            continue
+          }
+
+          const spanX = (feature.bounds.maxLng - feature.bounds.minLng) * unitX
+          const spanY = (feature.bounds.maxLat - feature.bounds.minLat) * unitY
+
+          // 低倍率下大量小区块只有亚像素大小，画了也看不见，直接跳过。
+          if (spanX * spanY < SAVE_MIN_FEATURE_AREA_PX) {
+            continue
+          }
+
+          const unit = saveUnitForFeature(feature)
+
+          if (!unit || unit.level === 'country') {
+            continue
+          }
+
+          const path = pathCache.get(feature)
+
+          if (!path) {
+            continue
+          }
+
+          ctx.fillStyle = unit.color
+          ctx.globalAlpha = SAVE_FILL_ALPHA
+          ctx.fill(path, 'evenodd')
+
+          ctx.strokeStyle = unit.color
+          ctx.globalAlpha = SAVE_STROKE_ALPHA
+          ctx.lineWidth = lineWidth
+          ctx.stroke(path)
+        }
+      }
+    }
+
+    ctx.restore()
+  }
+
   /** 静态层内容：网格、市级行政区、国界描边；完整重建与平移补绘共用 */
   function paintStatic(ctx: CanvasRenderingContext2D): void {
     drawGrid(ctx)
 
     if (countryFeatures.length === 0) {
+      return
+    }
+
+    // 有事件驱动存档时，整张地图换成政权政治地图：
+    // 不再绘制 Natural Earth 的现代国界，改用存档里的领土编号与代表色。
+    if (saveMode.value && saveMap) {
+      // 低倍率用预烘焙纹理，拖拽 / 缩放不再逐块重画 4,000 多条路径。
+      if (!(zoom <= SAVE_TEXTURE_MAX_ZOOM && drawSaveTexture(ctx))) {
+        drawSaveLandBase(ctx)
+        drawSaveCountryUnits(ctx)
+        drawSaveAreaGroups(ctx)
+        drawSaveAdminUnits(ctx)
+      }
       return
     }
 
@@ -638,7 +1259,19 @@ export function useWorldMap(options: WorldMapOptions = {}) {
 
   function drawHighlights(ctx: CanvasRenderingContext2D): void {
     if (hovered) {
-      drawFeatureOverlay(ctx, hovered.feature, COLOR_HOVER_FILL, COLOR_HOVER_STROKE, 3, 0.85)
+      const unit = saveUnitForFeature(hovered.feature)
+      const area = saveAreaForFeature(hovered.feature)
+      const color = unit?.color ?? area?.color
+      const highlighted = Boolean(unit || area)
+
+      drawFeatureOverlay(
+        ctx,
+        hovered.feature,
+        color ?? COLOR_HOVER_FILL,
+        highlighted ? '#f8fafc' : COLOR_HOVER_STROKE,
+        3,
+        highlighted ? 0.32 : 0.85,
+      )
     }
     if (selected && flashPhase > 0) {
       const isWhite = flashPhase % 2 === 0 || flashPhase >= FLASH_FINAL_PHASE
@@ -923,7 +1556,14 @@ export function useWorldMap(options: WorldMapOptions = {}) {
     const y = clientY - rect.top
     const current = camera()
 
-    const chunks = zoom >= CITY_ZOOM && adm2Store ? adm2Store.list() : []
+    // 存档模式下即便还没放大，也要优先命中存档里的下级行政区；
+    // 普通模式仍然只在放大到市级后才查分块。
+    const chunks = adm2Store && (saveMode.value || zoom >= CITY_ZOOM) ? adm2Store.list() : []
+
+    // 存档模式下，未指派的行政区只是兜底：先继续找有政权归属的地块，
+    // 避免整国已上色、点开某个没单独指派的地区却显示「未归属」。
+    let unassignedAdminHit: FeatureHit | null = null
+    let unassignedCountryHit: FeatureHit | null = null
 
     // 先在三个经度副本里找下级行政区，再找国家。
     // 否则跨 180° 的国家（美国、俄罗斯）会在 shift=-360 时先命中整块国家，
@@ -935,8 +1575,32 @@ export function useWorldMap(options: WorldMapOptions = {}) {
           continue
         }
         for (const feature of chunk.features) {
-          if (pointInFeature(lng, lat, feature)) {
-            return { feature, kind: 'adm2', lng, lat, shift }
+          if (!pointInFeature(lng, lat, feature)) {
+            continue
+          }
+
+          const hit: FeatureHit = { feature, kind: 'adm2', lng, lat, shift }
+
+          if (!saveMode.value || saveUnitForFeature(feature)) {
+            return hit
+          }
+
+          unassignedAdminHit ??= hit
+        }
+      }
+    }
+
+    // 世界生成的手绘国土没有行政区编号，单独按多边形命中。
+    if (saveMode.value && saveMap) {
+      for (const shift of LONGITUDE_SHIFTS) {
+        const { lng, lat } = screenToWorld(current, x, y, shift)
+        for (const group of saveMap.areaGroups) {
+          if (!pointInBounds(lng, lat, group.bounds)) {
+            continue
+          }
+
+          if (pointInFeature(lng, lat, group.feature)) {
+            return { feature: group.feature, kind: 'area', lng, lat, shift }
           }
         }
       }
@@ -945,12 +1609,21 @@ export function useWorldMap(options: WorldMapOptions = {}) {
     for (const shift of LONGITUDE_SHIFTS) {
       const { lng, lat } = screenToWorld(current, x, y, shift)
       for (const feature of countryFeatures) {
-        if (pointInFeature(lng, lat, feature)) {
-          return { feature, kind: 'country', lng, lat, shift }
+        if (!pointInFeature(lng, lat, feature)) {
+          continue
         }
+
+        const hit: FeatureHit = { feature, kind: 'country', lng, lat, shift }
+
+        if (!saveMode.value || saveUnitForFeature(feature)) {
+          return hit
+        }
+
+        unassignedCountryHit ??= hit
       }
     }
-    return null
+
+    return unassignedAdminHit ?? unassignedCountryHit
   }
 
   /** 放大/数据加载会改变光标下的要素，但鼠标不一定移动，这里主动重算一次 */
@@ -1024,8 +1697,28 @@ export function useWorldMap(options: WorldMapOptions = {}) {
 
   function describeSelection(selection: Selection): string {
     const { feature, kind } = selection
+    const unit = saveUnitForFeature(feature)
+    const area = saveAreaForFeature(feature)
+
+    if (saveMode.value) {
+      if (area) {
+        return `${area.areas.length} 块区域 · 世界生成边界`
+      }
+
+      if (unit) {
+        // 各国层级含义不同（Department / Prefecture / 区县…），优先显示数据里带的层级名
+        const label =
+          kind === 'adm2' ? (adm2Store?.chunk(feature.iso)?.label ?? '次级行政区') : '政权领地'
+        const place = unit.name && unit.name !== unit.code ? unit.name : feature.name
+        return [place, label].filter(Boolean).join(' · ')
+      }
+
+      return [kind === 'adm2' ? parentName(feature) : '', '存档中未归属该地块']
+        .filter(Boolean)
+        .join(' · ')
+    }
+
     if (kind === 'adm2') {
-      // 各国层级含义不同（Department / Prefecture / 区县…），优先显示数据里带的层级名
       const label = adm2Store?.chunk(feature.iso)?.label ?? '次级行政区'
       return [parentName(feature), label].filter(Boolean).join(' · ')
     }
@@ -1037,8 +1730,15 @@ export function useWorldMap(options: WorldMapOptions = {}) {
     if (!screen) {
       return
     }
-    infoName.value = selection.feature.name
-    infoCode.value = selection.feature.code
+    const unit = saveUnitForFeature(selection.feature)
+    const area = saveAreaForFeature(selection.feature)
+    infoName.value = unit?.regimeName ?? area?.regimeName ?? selection.feature.name
+    infoCode.value = unit
+      ? `政权 · ${selection.feature.code}`
+      : area
+        ? '手绘国土'
+        : selection.feature.code
+    infoAccent.value = unit?.color ?? area?.color ?? ''
     infoDetail.value = describeSelection(selection)
     selectionKind.value = selection.kind
     updatePanelPosition(screen)
@@ -1047,6 +1747,7 @@ export function useWorldMap(options: WorldMapOptions = {}) {
 
   function hideInfoWindow(): void {
     infoVisible.value = false
+    infoAccent.value = ''
     selected = null
     anchor = null
     flashPhase = 0
@@ -1265,10 +1966,25 @@ export function useWorldMap(options: WorldMapOptions = {}) {
       baseUrl: import.meta.env.BASE_URL,
       index,
       enableRemote: true,
-      maxCountries: MAX_LOADED_ADM2,
+      maxCountries: saveMode.value ? SAVE_MAX_LOADED_ADM2 : MAX_LOADED_ADM2,
       onChange: () => {
-        markDirty()
         syncCityLoading()
+        syncSaveAdminProgress()
+
+        if (saveMode.value) {
+          // 存档模式一次要加载整份世界，分块批次很多；攒一会儿再重建缓存。
+          if (!adm2Store || adm2Store.pending === 0) {
+            clearSaveDirtyTimer()
+            markDirty()
+            refreshHover()
+            scheduleSaveTexture()
+          } else {
+            scheduleSaveDirty()
+          }
+          return
+        }
+
+        markDirty()
         refreshHover()
       },
     })
@@ -1284,16 +2000,34 @@ export function useWorldMap(options: WorldMapOptions = {}) {
       hovered = null
       selected = null
       pathCache.clear()
+      clearSaveTexture()
       createStore(index)
       loadState.value = 'ready'
+      refreshEventDriveSave()
       markDirty()
       scheduleAdmin2(60)
     } catch (error) {
       countryFeatures = []
       selected = null
+      resetSaveState()
+      saveMode.value = false
       loadState.value = 'error'
       loadError.value = error instanceof Error ? error.message : String(error)
       markDirty()
+    }
+  }
+
+  function onStorageChange(event: StorageEvent): void {
+    if (event.key && !(EVENT_DRIVE_SAVE_STORAGE_KEYS as readonly string[]).includes(event.key)) {
+      return
+    }
+
+    scheduleSaveRefresh()
+  }
+
+  function onVisibilityChange(): void {
+    if (document.visibilityState === 'visible') {
+      scheduleSaveRefresh()
     }
   }
 
@@ -1319,6 +2053,9 @@ export function useWorldMap(options: WorldMapOptions = {}) {
     }
 
     window.addEventListener('resize', onWindowResize)
+    // 另一个标签页里事件驱动页保存后，世界地图不用刷新也能切换
+    window.addEventListener('storage', onStorageChange)
+    document.addEventListener('visibilitychange', onVisibilityChange)
 
     measure()
     markDirty()
@@ -1330,6 +2067,7 @@ export function useWorldMap(options: WorldMapOptions = {}) {
       const debugWindow = window as unknown as {
         __worldMapCamera?: () => unknown
         __worldMapFocus?: (lng: number, lat: number, nextZoom?: number) => void
+        __worldMapSave?: () => unknown
       }
       debugWindow.__worldMapCamera = () => ({ ...camera(), offsetX, offsetY, zoom })
       debugWindow.__worldMapFocus = (lng: number, lat: number, nextZoom?: number) => {
@@ -1344,6 +2082,16 @@ export function useWorldMap(options: WorldMapOptions = {}) {
         markDirty()
         scheduleAdmin2(0)
       }
+      debugWindow.__worldMapSave = () => ({
+        active: saveMode.value,
+        label: saveLabel.value,
+        regimes: saveRegimeCount.value,
+        units: saveUnitCount.value,
+        areas: saveAreaCount.value,
+        adminLoaded: saveAdminLoaded.value,
+        adminTotal: saveAdminTotal.value,
+        texture: Boolean(saveTextureCanvas),
+      })
     }
   })
 
@@ -1354,6 +2102,12 @@ export function useWorldMap(options: WorldMapOptions = {}) {
     if (ensureTimer !== null) {
       window.clearTimeout(ensureTimer)
       ensureTimer = null
+    }
+    clearSaveDirtyTimer()
+    clearSaveTexture()
+    if (saveRefreshTimer !== null) {
+      window.clearTimeout(saveRefreshTimer)
+      saveRefreshTimer = null
     }
     adm2Store?.dispose()
     adm2Store = null
@@ -1371,6 +2125,8 @@ export function useWorldMap(options: WorldMapOptions = {}) {
     resizeObserver?.disconnect()
     resizeObserver = null
     window.removeEventListener('resize', onWindowResize)
+    window.removeEventListener('storage', onStorageChange)
+    document.removeEventListener('visibilitychange', onVisibilityChange)
 
     if (flashTimer !== null) {
       window.clearInterval(flashTimer)
@@ -1385,6 +2141,7 @@ export function useWorldMap(options: WorldMapOptions = {}) {
     infoName,
     infoCode,
     infoDetail,
+    infoAccent,
     infoX,
     infoY,
     selectionKind,
@@ -1392,6 +2149,14 @@ export function useWorldMap(options: WorldMapOptions = {}) {
     loadState,
     loadError,
     cityLoading,
+    saveMode,
+    saveLabel,
+    saveRegimeCount,
+    saveUnitCount,
+    saveAreaCount,
+    saveAdminLoaded,
+    saveAdminTotal,
+    saveAdminLoading,
     retry: load,
   }
 }

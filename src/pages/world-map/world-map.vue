@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 import { useWorldMap } from '@/composables/world-map'
 import InfoPanel from './components/info-panel.vue'
@@ -23,6 +23,7 @@ const {
   infoName,
   infoCode,
   infoDetail,
+  infoAccent,
   infoX,
   infoY,
   selectionKind,
@@ -30,17 +31,39 @@ const {
   loadState,
   loadError,
   cityLoading,
+  saveMode,
+  saveLabel,
+  saveRegimeCount,
+  saveUnitCount,
+  saveAreaCount,
+  saveAdminLoaded,
+  saveAdminTotal,
+  saveAdminLoading,
   retry,
 } = useWorldMap({
   getPanelHeight: () => panelHeight.value,
 })
 
-/** 点开“国家”时覆盖一层“入侵进度”过场，播完自动收起；点市级行政区不播 */
+/**
+ * 点开“国家”时覆盖一层“入侵进度”过场，播完自动收起；点市级行政区不播。
+ * 存档政治地图是浏览政权的模式，点击地块不播过场，免得挡住地图。
+ */
 const loadingVisible = ref(false)
-watch([infoVisible, selectionKind], ([visible, kind]) => {
-  if (visible && kind === 'country') {
+watch([infoVisible, selectionKind, saveMode], ([visible, kind, saved]) => {
+  if (visible && kind === 'country' && !saved) {
     loadingVisible.value = true
   }
+})
+
+/** 存档徽标里的一行统计：编号领土 + 世界生成的手绘国土。 */
+const saveSummary = computed(() => {
+  const parts = [`${saveRegimeCount.value} 个政权`, `${saveUnitCount.value} 块编号领土`]
+
+  if (saveAreaCount.value > 0) {
+    parts.push(`${saveAreaCount.value} 块手绘国土`)
+  }
+
+  return parts.join(' · ')
 })
 </script>
 
@@ -53,6 +76,7 @@ watch([infoVisible, selectionKind], ([visible, kind]) => {
       :name="infoName"
       :code="infoCode"
       :detail="infoDetail"
+      :accent="infoAccent"
       :x="infoX"
       :y="infoY"
       @height-change="updatePanelHeight"
@@ -72,12 +96,34 @@ watch([infoVisible, selectionKind], ([visible, kind]) => {
       <button type="button" class="hint-retry" @click="retry">重新加载</button>
     </div>
 
-    <p v-if="!cityMode" class="world-map-hint-zoom">滚轮放大后可查看下级行政区</p>
+    <div v-if="saveMode" class="world-map-save-badge">
+      <span class="save-badge-dot" />
+      <span class="save-badge-copy">
+        <strong>{{ saveLabel }}</strong>
+        <span>{{ saveSummary }}</span>
+      </span>
+    </div>
 
-    <p v-if="cityLoading" class="world-map-hint-city">正在加载次级行政区…</p>
+    <p v-if="!cityMode" class="world-map-hint-zoom">
+      {{
+        saveMode
+          ? '当前按事件驱动存档绘制政权领地 · 滚轮放大查看地区边界'
+          : '滚轮放大后可查看下级行政区'
+      }}
+    </p>
+
+    <p v-if="cityLoading && !saveMode" class="world-map-hint-city">正在加载次级行政区…</p>
+
+    <p v-else-if="saveAdminLoading" class="world-map-hint-city">
+      正在加载存档中的地区边界 {{ saveAdminLoaded }} / {{ saveAdminTotal }}
+    </p>
 
     <p class="world-map-attribution">
-      边界数据：Natural Earth（公有领域）· geoBoundaries（CC BY 4.0）· 阿里云 DataV
+      {{
+        saveMode
+          ? '边界来源：事件驱动当前存档 · 地块底图：Natural Earth（公有领域）· geoBoundaries（CC BY 4.0）· 阿里云 DataV'
+          : '边界数据：Natural Earth（公有领域）· geoBoundaries（CC BY 4.0）· 阿里云 DataV'
+      }}
     </p>
   </div>
 </template>
@@ -165,6 +211,57 @@ watch([infoVisible, selectionKind], ([visible, kind]) => {
 
 .hint-retry:hover {
   background: rgba(59, 130, 246, 0.3);
+}
+
+.world-map-save-badge {
+  position: absolute;
+  left: 16px;
+  top: 14px;
+  z-index: 5;
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  max-width: min(460px, calc(100% - 32px));
+  padding: 9px 13px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 9px;
+  background: rgba(10, 14, 20, 0.78);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(8px);
+  color: #cbd5e1;
+  pointer-events: none;
+}
+
+.save-badge-dot {
+  width: 8px;
+  height: 8px;
+  margin-top: 4px;
+  flex: none;
+  border-radius: 50%;
+  background: #38bdf8;
+  box-shadow: 0 0 10px rgba(56, 189, 248, 0.8);
+}
+
+.save-badge-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.save-badge-copy strong {
+  overflow: hidden;
+  color: #e2e8f0;
+  font-size: 13px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.save-badge-copy span {
+  color: rgba(148, 163, 184, 0.82);
+  font-size: 11px;
+  letter-spacing: 0.3px;
 }
 
 .world-map-hint-zoom {

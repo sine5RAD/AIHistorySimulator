@@ -26,16 +26,20 @@ const props = withDefaults(
     title?: string
     items: FloatingCountrySidebarItem[]
     emptyText?: string
+    /** 是否在每个政权的展开面板里显示「灭亡」按钮。 */
+    destroyable?: boolean
   }>(),
   {
     title: '国家列表',
     emptyText: '暂无国家',
+    destroyable: false,
   },
 )
 
 const emit = defineEmits<{
   select: [item: FloatingCountrySidebarItem]
   'edit-stat': [payload: FloatingCountrySidebarEditStatPayload]
+  destroy: [item: FloatingCountrySidebarItem]
 }>()
 
 const activeId = ref<string | null>(null)
@@ -195,6 +199,16 @@ const handleEditKeydown = (
                   />
                 </div>
               </dl>
+
+              <button
+                v-if="destroyable"
+                class="floating-country-sidebar__destroy"
+                type="button"
+                :aria-label="`灭亡 ${item.name}`"
+                @click="emit('destroy', item)"
+              >
+                灭亡此政权
+              </button>
             </div>
           </transition>
         </section>
@@ -432,6 +446,25 @@ const handleEditKeydown = (
   color: var(--color-text);
   opacity: 0.75;
   background: rgba(255, 255, 255, 0.28);
+}
+
+.floating-country-sidebar__destroy {
+  align-self: flex-start;
+  padding: 6px 12px;
+  border: 1px solid color-mix(in srgb, #d64545 45%, var(--color-border));
+  border-radius: 999px;
+  background: transparent;
+  color: #d64545;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    opacity 0.15s ease;
+}
+
+.floating-country-sidebar__destroy:hover {
+  background: color-mix(in srgb, #d64545 12%, transparent);
 }
 
 .floating-country-sidebar__shell.is-collapsed .floating-country-sidebar__empty {

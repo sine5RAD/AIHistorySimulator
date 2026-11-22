@@ -59,8 +59,8 @@ describe('toBriefCountry', () => {
 })
 
 describe('toDetailCountry', () => {
-  it('保留完整精简档案，但把领土换成摘要', () => {
-    const detail = toDetailCountry(compactCountry)
+  it('保留完整精简档案，并给出 adm1 的编号与名称', () => {
+    const detail = toDetailCountry(compactCountry, { 'AA-1': '甲州一区' })
 
     expect(detail.城市).toEqual(compactCountry.城市)
     expect(detail.科技).toEqual(compactCountry.科技)
@@ -70,8 +70,11 @@ describe('toDetailCountry', () => {
       国家级代码: ['AAA'],
       adm1数量: 2,
       adm2数量: 1,
+      adm1: [{ 编号: 'AA-1', 名称: '甲州一区' }, { 编号: 'AA-2' }],
     })
     expect(JSON.stringify(detail)).toContain('开局总统')
+    // adm2 只给数量，不给逐条编号（合成 ID 太长）
+    expect(JSON.stringify(detail)).not.toContain('110000')
   })
 })
 
