@@ -143,6 +143,17 @@ const compactRegime = (regime: RegimeData): Record<string, unknown> => {
   return pruneEmpty(compact) as Record<string, unknown>
 }
 
+/**
+ * 事件驱动用的政权精简版：
+ * 沿用剧本审校版的省略规则，但补回推演需要读取的 `国家指标`
+ *（审校版为了省 token 省掉了与 `初始国家力量` 重复的这一项）。
+ */
+export const compactRegimeForEventDrive = (regime: RegimeData): Record<string, unknown> => {
+  const compact = compactRegime(regime)
+  compact.国家指标 = { ...regime.初始国家力量 }
+  return compact
+}
+
 export interface ScenarioAiPayload {
   text: string
   chars: number

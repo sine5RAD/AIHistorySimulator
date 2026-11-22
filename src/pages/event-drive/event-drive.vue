@@ -16,6 +16,16 @@ import {
   type EventDriveActionKind,
 } from '@/utils/event-drive-actions'
 import { submitPreparedPrompt } from '@/utils/submit-commition'
+import { extractJsonFromText } from '@/utils/ai-json'
+import { matchCountryNamesInText } from '@/utils/country-mentions'
+import { buildBriefCountries, buildDetailCountries } from '@/utils/event-drive-context'
+import { compactRegimeForEventDrive, estimateTextTokens } from '@/utils/scenario-ai'
+import {
+  EVENT_DRIVE_FRESH_SESSION_KEY,
+  SCENARIO_TRANSFER_KEY,
+  parseScenarioTransferPayload,
+  type ScenarioTransferPayload,
+} from '@/utils/scenario-transfer'
 import FloatingCountrySidebar, {
   type FloatingCountrySidebarEditStatPayload,
   type FloatingCountrySidebarItem,
@@ -40,6 +50,8 @@ interface WorldLandTransferPayload {
   source?: string
   generatedAt?: string
   currentCountryName?: string
+  scenarioName?: string
+  scenarioStartTime?: string
   world?: unknown
   quadtree?: unknown
   countries?: unknown[]
@@ -63,6 +75,10 @@ interface WorldLandTransferState {
   payload: WorldLandTransferPayload
   source: 'session' | 'local'
 }
+
+/** 剧本编辑页交接来的世界包用 source / scenarioName 标记。 */
+const isScenarioTransferPayload = (payload: WorldLandTransferPayload | null): boolean =>
+  !!payload && (payload.source === 'scenario-editor' || typeof payload.scenarioName === 'string')
 
 interface EventDriveArchiveEntry {
   world: WorldLandTransferPayload
@@ -93,7 +109,6 @@ const CHAT_WINDOW_DRAFT_KEY = 'event-drive-chat-window-draft'
 const WORLD_PACKAGE_TRANSFER_KEY = 'event-drive-world-package-json'
 const WORLD_JSON_TRANSFER_KEY = 'event-drive-world-json'
 const WORLD_LAND_TRANSFER_KEY = 'event-drive-world-land-json'
-const EVENT_DRIVE_FRESH_SESSION_KEY = 'event-drive-fresh-session'
 const LIVE_SESSION_SNAPSHOT_ID = '__live__'
 
 const router = useRouter()
@@ -254,6 +269,26 @@ const countrySidebarItems = computed<FloatingCountrySidebarItem[]>(() => {
   })
 })
 
+const activeScenarioSummary = computed(() => {
+  const payload = activeWorldPayload.value
+
+  if (!isScenarioTransferPayload(payload)) {
+    return null
+  }
+
+  const countries = getCountriesFromPayload(payload)
+
+  return {
+    name: payload?.scenarioName?.trim() || '未命名剧本',
+    startTime: payload?.scenarioStartTime?.trim() || '未填写',
+    countryCount: countries.length,
+    playerControlledCount: getPlayerControlledCountryNames(payload).length,
+    briefTokens: worldContextMessage.value
+      ? estimateTextTokens(worldContextMessage.value.content)
+      : 0,
+  }
+})
+
 const systemPrompt = defaultEventDrivePrompt
 
 const currentCountryNames = computed(() =>
@@ -321,6 +356,13 @@ const goToSetting = () => {
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === 'object' && !Array.isArray(value)
+
+const getPlayerControlledCountryNames = (payload: WorldLandTransferPayload | null): string[] =>
+  getCountriesFromPayload(payload)
+    .filter((country): country is Record<string, unknown> => isRecord(country))
+    .filter((country) => country.AI控制 === false)
+    .map((country) => (typeof country.国家名称 === 'string' ? country.国家名称.trim() : ''))
+    .filter((name) => name.length > 0)
 
 const isCountryIndicatorData = (value: unknown): value is CountryIndicatorData =>
   isRecord(value) &&
@@ -395,6 +437,13 @@ const extractCountryIndicatorsFromWorld = (
 const getWorldArchiveKey = (payload: WorldLandTransferPayload | null) => {
   if (!payload) {
     return ''
+  }
+
+  const scenarioName = payload.scenarioName?.trim()
+
+  if (scenarioName) {
+    const startTime = payload.scenarioStartTime?.trim()
+    return startTime ? `剧本 · ${scenarioName} · ${startTime}` : `剧本 · ${scenarioName}`
   }
 
   const currentName = payload.currentCountryName?.trim()
@@ -523,7 +572,7 @@ const writeSnapshotHistory = (history: EventDriveSnapshotHistory) => {
 }
 
 const getSnapshotLabel = (world: WorldLandTransferPayload | null, createdAt: string) => {
-  const worldName = world?.currentCountryName?.trim() || '未命名世界'
+  const worldName = world?.scenarioName?.trim() || world?.currentCountryName?.trim() || '未命名世界'
   const timestamp = createdAt.replace('T', ' ').slice(0, 19)
 
   return `${worldName} · ${timestamp}`
@@ -693,10 +742,7 @@ const setActiveWorldContext = (payload: WorldLandTransferPayload) => {
   activeWorldPayload.value = payload
   activeCountryIndicators.value = extractCountryIndicatorsFromWorld(payload)
   activeWorldKey.value = getWorldArchiveKey(payload)
-  worldContextMessage.value = {
-    role: 'user',
-    content: buildWorldTransferMessage(payload),
-  }
+  refreshWorldContextMessage()
 
   try {
     window.localStorage.setItem(EVENT_DRIVE_LAST_WORLD_KEY, activeWorldKey.value)
@@ -847,7 +893,42 @@ const persistWorldLandPayload = (payload: WorldLandTransferPayload) => {
   }
 }
 
+const buildScenarioBriefMessage = (payload: WorldLandTransferPayload) => {
+  const scenarioName = payload.scenarioName?.trim() || '未命名剧本'
+  const startTime = payload.scenarioStartTime?.trim() || '未填写'
+  const countries = buildBriefCountries(getCountriesFromPayload(payload))
+  const playerControlled = getPlayerControlledCountryNames(payload)
+  const aiControlledCount = Math.max(0, countries.length - playerControlled.length)
+  const controlSummary = playerControlled.length
+    ? `玩家操控（AI控制: false）：${playerControlled.join('、')}；AI 操控 ${aiControlledCount} 个。`
+    : `全部 ${countries.length} 个政权都由 AI 推演（AI控制: true）。`
+  // 提示词按 world.countries 查找国家，这里包一层，避免剧本的「存在国家」字段名对不上。
+  const scenarioJson = JSON.stringify(
+    {
+      剧本名称: scenarioName,
+      开局时间: startTime,
+      world: { countries },
+    },
+    null,
+    2,
+  )
+
+  return [
+    `下面是从剧本编辑页发送来的开局剧本「${scenarioName}」，开局时间：${startTime}。这是国家简报，默认每轮发送。`,
+    controlSummary,
+    '如果后续指令涉及具体国家，系统会在该指令前附上该国详细档案；请优先结合详细档案推演，没有详细档案时不要虚构未提供的信息。',
+    '',
+    '```json',
+    scenarioJson,
+    '```',
+  ].join('\n')
+}
+
 const buildWorldTransferMessage = (payload: WorldLandTransferPayload) => {
+  if (isScenarioTransferPayload(payload)) {
+    return buildScenarioBriefMessage(payload)
+  }
+
   const prettyJson = JSON.stringify(payload, null, 2)
   const label =
     payload.world && payload.quadtree
@@ -863,6 +944,123 @@ const buildWorldTransferMessage = (payload: WorldLandTransferPayload) => {
     prettyJson,
     '```',
   ].join('\n')
+}
+
+const buildScenarioDetailMessage = (
+  payload: WorldLandTransferPayload,
+  matchedNames: readonly string[],
+): PromptMessage | null => {
+  const countries = buildDetailCountries(getCountriesFromPayload(payload), matchedNames)
+
+  if (!countries.length) {
+    return null
+  }
+
+  return {
+    role: 'user',
+    content: [
+      `以下是本轮消息涉及国家的详细档案（${matchedNames.join('、')}），仅作参考；国家名单与规则仍以前面的国家简报为准。`,
+      '',
+      '```json',
+      JSON.stringify({ 国家: countries }, null, 2),
+      '```',
+    ].join('\n'),
+  }
+}
+
+/** 只为本轮消息提到的国家附加详情；没有提到任何国家时返回 null。 */
+const buildScenarioDetailMessageForCurrentRequest = (): PromptMessage | null => {
+  const payload = activeWorldPayload.value
+
+  if (!payload || !isScenarioTransferPayload(payload)) {
+    return null
+  }
+
+  const hiddenText = hiddenPromptMessages.value
+    .map((message) => message.content)
+    .join('\n')
+    .trim()
+  const latestUserMessage = [...chatMessages.value]
+    .reverse()
+    .find((message) => message.role === 'user')
+  const requestText = hiddenText || latestUserMessage?.content || ''
+
+  if (!requestText.trim()) {
+    return null
+  }
+
+  const countryNames = getCountriesFromPayload(payload)
+    .filter((country): country is Record<string, unknown> => isRecord(country))
+    .map((country) => (typeof country.国家名称 === 'string' ? country.国家名称.trim() : ''))
+    .filter((name) => name.length > 0)
+  const matchedNames = matchCountryNamesInText(requestText, countryNames)
+
+  return matchedNames.length ? buildScenarioDetailMessage(payload, matchedNames) : null
+}
+
+/** 国家档案被 AI 或侧栏修改后，重新生成简报，避免下一轮还发旧指标。 */
+const refreshWorldContextMessage = () => {
+  const payload = activeWorldPayload.value
+
+  worldContextMessage.value = payload
+    ? {
+        role: 'user',
+        content: buildWorldTransferMessage(payload),
+      }
+    : null
+}
+
+const createWorldPayloadFromScenario = (
+  transfer: ScenarioTransferPayload,
+): WorldLandTransferPayload => {
+  const countryColorMap: Record<string, string> = {}
+
+  for (const regime of transfer.scenario.存在国家) {
+    const name = regime.国家名称.trim()
+
+    if (name) {
+      countryColorMap[name] = regime.代表色
+    }
+  }
+
+  return {
+    source: 'scenario-editor',
+    generatedAt: transfer.sentAt,
+    scenarioName: transfer.scenario.剧本名称,
+    scenarioStartTime: transfer.scenario.开局时间,
+    countryColorMap,
+    countries: transfer.scenario.存在国家.map(compactRegimeForEventDrive),
+  }
+}
+
+function clearScenarioTransferPayload() {
+  window.sessionStorage.removeItem(SCENARIO_TRANSFER_KEY)
+  window.localStorage.removeItem(SCENARIO_TRANSFER_KEY)
+}
+
+const readScenarioTransferPayload = (): ScenarioTransferPayload | null => {
+  try {
+    const cachedPayload =
+      window.sessionStorage.getItem(SCENARIO_TRANSFER_KEY) ??
+      window.localStorage.getItem(SCENARIO_TRANSFER_KEY)
+
+    if (!cachedPayload) {
+      return null
+    }
+
+    const parsedPayload = parseScenarioTransferPayload(JSON.parse(cachedPayload) as unknown)
+
+    if (!parsedPayload) {
+      clearScenarioTransferPayload()
+      return null
+    }
+
+    return parsedPayload
+  } catch (error) {
+    console.error('Failed to read scenario transfer payload', error)
+    clearScenarioTransferPayload()
+    return null
+  }
 }
 
 const readWorldLandPayload = (): WorldLandTransferState | null => {
@@ -1100,22 +1298,27 @@ const resetChat = async () => {
   await scrollToBottom()
 }
 
-const buildPreparedPrompt = (modelOverride?: string) => ({
-  provider: selectedProvider.value,
-  model: modelOverride ?? selectedModel.value,
-  messages: [
-    {
-      role: 'system' as const,
-      content: systemPrompt,
-    },
-    ...(worldContextMessage.value ? [worldContextMessage.value] : []),
-    ...hiddenPromptMessages.value,
-    ...chatMessages.value.map((message) => ({
-      role: message.role,
-      content: message.content,
-    })),
-  ],
-})
+const buildPreparedPrompt = (modelOverride?: string) => {
+  const detailMessage = buildScenarioDetailMessageForCurrentRequest()
+
+  return {
+    provider: selectedProvider.value,
+    model: modelOverride ?? selectedModel.value,
+    messages: [
+      {
+        role: 'system' as const,
+        content: systemPrompt,
+      },
+      ...(worldContextMessage.value ? [worldContextMessage.value] : []),
+      ...(detailMessage ? [detailMessage] : []),
+      ...hiddenPromptMessages.value,
+      ...chatMessages.value.map((message) => ({
+        role: message.role,
+        content: message.content,
+      })),
+    ],
+  }
+}
 
 const sendSilentInstructionToAi = async (instruction: string) => {
   hiddenPromptMessages.value = [
@@ -1217,6 +1420,7 @@ const handleEditStat = async (payload: FloatingCountrySidebarEditStatPayload) =>
       console.error('同步指标到 activeWorldPayload 失败', error)
     }
 
+    refreshWorldContextMessage()
     saveCurrentWorldArchive()
     await sendSilentInstructionToAi(`${countryName}的${label}已变为${newValue}`)
     errorText.value = ''
@@ -1240,34 +1444,24 @@ const handleEditStat = async (payload: FloatingCountrySidebarEditStatPayload) =>
       return
     }
 
+    refreshWorldContextMessage()
     saveCurrentWorldArchive()
     await sendSilentInstructionToAi(`${countryName}的${label}已变为${newValue}`)
     errorText.value = ''
   }
 }
 
-const extractJsonFromText = (text: string): string | null => {
-  // 首先尝试寻找 ```json ... ``` 区块
-  const codeBlockMatch = text.match(/```json\s*([\s\S]*?)\s*```/i)
-
-  if (codeBlockMatch && codeBlockMatch[1]) {
-    return codeBlockMatch[1].trim()
-  }
-
-  // 其次尝试直接匹配包含 国家指标 的 JSON 对象
-  const roughMatch = text.match(/\{[\s\S]*?"国家指标"[\s\S]*?\}/)
-
-  if (roughMatch && roughMatch[0]) {
-    return roughMatch[0]
-  }
-
-  return null
-}
-
 const handleAssistantResponse = async (responseText: string) => {
   const jsonText = extractJsonFromText(responseText)
 
   if (!jsonText) {
+    // 只有明确像变更 JSON 的回复才警告，普通叙述不打扰用户。
+    if (responseText.includes('"国家指标"') || /```(?:json)?/i.test(responseText)) {
+      chatMessages.value.push({
+        role: 'assistant',
+        content: '警告：没有找到完整可解析的 JSON，未应用任何变更。',
+      })
+    }
     return
   }
 
@@ -1285,6 +1479,14 @@ const handleAssistantResponse = async (responseText: string) => {
   }
 
   const entries: unknown[] = Array.isArray(parsed) ? parsed : [parsed]
+  // 普通叙述里也可能出现示例 JSON；只有带变更字段的内容才进入应用流程。
+  const looksLikeChangePayload = entries.some(
+    (entry) => isRecord(entry) && ('国家指标' in entry || '国家名称' in entry || '描述' in entry),
+  )
+
+  if (!looksLikeChangePayload) {
+    return
+  }
 
   const applied: string[] = []
   const failed: string[] = []
@@ -1400,6 +1602,7 @@ const handleAssistantResponse = async (responseText: string) => {
   }
 
   // 持久化
+  refreshWorldContextMessage()
   try {
     saveCurrentWorldArchive()
   } catch (error) {
@@ -1544,6 +1747,7 @@ onMounted(() => {
 
   if (isFreshSession) {
     window.sessionStorage.removeItem(EVENT_DRIVE_FRESH_SESSION_KEY)
+    clearChatWindowDraft()
     clearSelectedSnapshot()
   } else {
     loadChatWindowDraft()
@@ -1551,13 +1755,33 @@ onMounted(() => {
 
   snapshotHistory.value = readSnapshotHistory()
 
-  const worldLandState = readWorldLandPayload()
+  const scenarioTransfer = readScenarioTransferPayload()
+  // 剧本交接优先于世界包：同一局推演以最近一次明确发送的剧本为准。
+  const worldLandState = scenarioTransfer ? null : readWorldLandPayload()
   const archive = isFreshSession ? {} : readEventDriveArchive()
   const selectedArchiveKey = isFreshSession
     ? ''
     : resolveArchiveKey(worldLandState?.payload ?? null, archive)
 
-  if (!isFreshSession && selectedArchiveKey && archive[selectedArchiveKey]) {
+  if (scenarioTransfer) {
+    const scenarioPayload = createWorldPayloadFromScenario(scenarioTransfer)
+
+    // 新剧本要作为全新开局：丢掉可能残留的世界包交接，避免下次打开被旧世界覆盖。
+    window.sessionStorage.removeItem(WORLD_PACKAGE_TRANSFER_KEY)
+    window.sessionStorage.removeItem(WORLD_JSON_TRANSFER_KEY)
+    window.sessionStorage.removeItem(WORLD_LAND_TRANSFER_KEY)
+    pendingWorldLandPayload.value = null
+    pendingWorldLandSource.value = null
+    chatMessages.value = []
+    chatInput.value = ''
+    hiddenPromptMessages.value = []
+    errorText.value = ''
+    clearChatWindowDraft()
+    setActiveWorldContext(scenarioPayload)
+    saveCurrentWorldArchive()
+    clearSelectedSnapshot()
+    clearScenarioTransferPayload()
+  } else if (!isFreshSession && selectedArchiveKey && archive[selectedArchiveKey]) {
     applyArchiveEntry(selectedArchiveKey, archive[selectedArchiveKey])
   } else if (worldLandState) {
     pendingWorldLandPayload.value = worldLandState.payload
@@ -1966,6 +2190,21 @@ const selectedSnapshotLabel = computed(() => {
       </div>
 
       <aside class="side-column">
+        <section v-if="activeScenarioSummary" class="status-card panel">
+          <h2 class="status-title">当前剧本</h2>
+          <strong>{{ activeScenarioSummary.name }}</strong>
+          <p>开局时间：{{ activeScenarioSummary.startTime }}</p>
+          <p>
+            {{ activeScenarioSummary.countryCount }} 个政权 · 玩家操控
+            {{ activeScenarioSummary.playerControlledCount }} 个
+          </p>
+          <p class="status-note">
+            每轮发送国家简报（约
+            {{ activeScenarioSummary.briefTokens.toLocaleString('zh-CN') }}
+            tokens）；消息中出现国家名时自动附加该国详细档案。
+          </p>
+        </section>
+
         <section class="status-card panel">
           <h2 class="status-title">当前配置</h2>
           <strong>{{ settingsSummary }}</strong>

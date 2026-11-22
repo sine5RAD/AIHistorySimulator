@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 
 import {
   useTerritoryMap,
@@ -43,6 +44,11 @@ import {
 } from '@/utils/scenario-data'
 import { buildIndexedRegimes, type RegimeSortMode } from '@/utils/regime-sort'
 import { buildScenarioAiPayload } from '@/utils/scenario-ai'
+import {
+  EVENT_DRIVE_FRESH_SESSION_KEY,
+  SCENARIO_TRANSFER_KEY,
+  createScenarioTransferPayload,
+} from '@/utils/scenario-transfer'
 
 defineOptions({
   name: 'ScenarioEditorPage',
@@ -79,6 +85,8 @@ const errorMessage = ref('')
 const lastSavedAt = ref<Date | null>(null)
 const draftPersistFailed = ref(false)
 const jsonPanelOpen = ref(false)
+
+const router = useRouter()
 
 const isSendingToAi = ref(false)
 const aiPanelOpen = ref(false)
@@ -423,6 +431,43 @@ const exportScenario = () => {
   const fileName = `${safeFileName(scenario.value.剧本名称, '剧本')}.json`
   downloadText(scenarioExportText.value, fileName)
   showMessage(`已导出「${fileName}」。`)
+}
+
+/**
+ * 把当前剧本交给事件驱动页作为开局世界。
+ *
+ * 交接内容写在 `event-drive-scenario-json`：事件驱动页读取后会转成自己的世界包，
+ * 因此不需要用户先导出文件再手动导入。`event-drive-fresh-session` 让推演页忽略
+ * 上一局的聊天草稿与快照，避免旧对话污染新剧本。
+ */
+const sendScenarioToEventDrive = () => {
+  if (!scenario.value.存在国家.length) {
+    showMessage('剧本里还没有政权，先新建或导入政权再发送到推演页。', 'error')
+    return
+  }
+
+  try {
+    const payload = createScenarioTransferPayload(scenario.value)
+    const transferJson = JSON.stringify(payload)
+
+    window.sessionStorage.setItem(SCENARIO_TRANSFER_KEY, transferJson)
+    window.sessionStorage.setItem(EVENT_DRIVE_FRESH_SESSION_KEY, 'true')
+    persistDraft()
+    void router.push({ name: 'event-drive' })
+  } catch (error) {
+    console.error('Failed to send scenario to event drive', error)
+
+    // 写入中途失败时清掉半成品，避免下次打开推演页误加载旧剧本。
+    try {
+      window.sessionStorage.removeItem(SCENARIO_TRANSFER_KEY)
+      window.localStorage.removeItem(SCENARIO_TRANSFER_KEY)
+      window.sessionStorage.removeItem(EVENT_DRIVE_FRESH_SESSION_KEY)
+    } catch {
+      // 存储不可用时无需再处理。
+    }
+
+    showMessage('发送至推演失败，请检查浏览器存储空间后重试。', 'error')
+  }
 }
 
 const exportRegime = () => {
@@ -1199,6 +1244,14 @@ onBeforeUnmount(() => {
         <button type="button" @click="triggerScenarioImport">导入剧本 JSON</button>
         <button type="button" class="primary" @click="exportScenario">导出剧本 JSON</button>
         <button type="button" @click="importWorldFromSession">从世界生成导入</button>
+        <button
+          type="button"
+          class="push-action"
+          title="把当前剧本 JSON 发送到事件驱动页，作为推演的开局世界"
+          @click="sendScenarioToEventDrive"
+        >
+          发送至推演
+        </button>
         <button
           type="button"
           class="ai-action"
@@ -2002,6 +2055,17 @@ button.ai-action {
 button.ai-action:hover:not(:disabled) {
   border-color: var(--scenario-accent);
   background: color-mix(in oklab, var(--scenario-accent) 18%, var(--scenario-panel));
+}
+
+button.push-action {
+  border-color: color-mix(in oklab, #10b981 55%, transparent);
+  background: color-mix(in oklab, #10b981 12%, var(--scenario-panel));
+  font-weight: 600;
+}
+
+button.push-action:hover:not(:disabled) {
+  border-color: #10b981;
+  background: color-mix(in oklab, #10b981 20%, var(--scenario-panel));
 }
 
 .toast {

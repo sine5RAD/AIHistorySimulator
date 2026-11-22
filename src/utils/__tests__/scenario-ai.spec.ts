@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
 import { createEmptyRegimeData, createEmptyScenarioData } from '@/types/scenario'
-import { buildScenarioAiPayload, estimateTextTokens } from '../scenario-ai'
+import {
+  buildScenarioAiPayload,
+  compactRegimeForEventDrive,
+  estimateTextTokens,
+} from '../scenario-ai'
 
 const makeRegime = (name: string) => {
   const regime = createEmptyRegimeData('#123456')
@@ -86,5 +90,22 @@ describe('buildScenarioAiPayload', () => {
     expect(payload.territoryCount).toBe(0)
     expect(payload.tokens).toBeGreaterThan(0)
     expect(JSON.parse(payload.text).存在国家).toEqual([])
+  })
+})
+
+describe('compactRegimeForEventDrive', () => {
+  it('保留 AI控制 与国家指标，并继续按级别汇总领土', () => {
+    const regime = makeRegime('甲国')
+    regime.AI控制 = false
+    regime.初始国家力量 = { 政治稳定: 1, 经济发展: 2, 国际影响: 3 }
+    regime.领土 = [{ 名称: 'A', 代码: 'AA-1', 国家代码: 'AAA', 级别: 'adm1' }]
+
+    const compact = compactRegimeForEventDrive(regime)
+
+    expect(compact.国家名称).toBe('甲国')
+    expect(compact.AI控制).toBe(false)
+    expect(compact.初始国家力量).toEqual({ 政治稳定: 1, 经济发展: 2, 国际影响: 3 })
+    expect(compact.国家指标).toEqual({ 政治稳定: 1, 经济发展: 2, 国际影响: 3 })
+    expect(compact.领土).toEqual({ 总数: 1, adm1: ['AA-1'] })
   })
 })

@@ -360,6 +360,10 @@ interface RgbColor {
 #### 主要功能
 
 - 剧本 JSON 导入/导出与本地自动保存（`scenario-editor-draft`）
+- 「发送至推演」把完整剧本写入 `event-drive-scenario-json`（sessionStorage）并跳转事件驱动页；
+  推演页优先于世界包读取该交接内容，每轮默认注入**国家简报**（名称、`AI控制`、三国力、政体、政治制度、
+  经济状况、领导人姓名/职位、人口与领土摘要），只有消息中提到某国时才追加该国**详细档案**
+  （领导人简介、城市、科技、武装力量等，领土仍用摘要）；交接键读取后立即清除，避免下次打开覆盖后续聊天
 - 「发送至 AI」使用精简审核版：省略空字段、重复的国家指标和地区名称，领土按级别只保留编号；
   80 政权 / 4,465 块领土约 4.1 万 tokens，避免完整 JSON（约 22 万 tokens）超出模型上下文；
   请求失败时显示真实 HTTP 状态与服务端错误，不再只显示「没有返回有效内容」
@@ -417,11 +421,12 @@ interface RegimeData extends CountryData {
 
 #### localStorage 键
 
-| 键名                     | 用途                           |
-| ------------------------ | ------------------------------ |
-| `scenario-editor-draft`  | 剧本草稿（自动保存）           |
-| `scenario-editor-import` | 文章转 JSON 的一次性交接数据   |
-| `worldDataDraft`         | 世界生成草稿（读取后转换领土） |
+| 键名                        | 用途                           |
+| --------------------------- | ------------------------------ |
+| `scenario-editor-draft`     | 剧本草稿（自动保存）           |
+| `scenario-editor-import`    | 文章转 JSON 的一次性交接数据   |
+| `event-drive-scenario-json` | 「发送至推演」的剧本交接数据   |
+| `worldDataDraft`            | 世界生成草稿（读取后转换领土） |
 
 #### 与文章转 JSON 的衔接
 
@@ -435,12 +440,34 @@ interface RegimeData extends CountryData {
 系统提示词为 `defaultScenarioReviewPrompt`。回复只保存在页面状态中，不写入草稿或剧本 JSON；
 切换 / 新建 / 导入剧本时会清空旧回复，避免把上一次的审校结果当成当前剧本的结论。
 
+#### 与事件驱动的衔接
+
+「发送至推演」调用 `createScenarioTransferPayload(scenario)` 生成
+`{ source: 'scenario-editor', sentAt, scenario }`，写入 `event-drive-scenario-json`
+并设置 `event-drive-fresh-session`，然后 `router.push({ name: 'event-drive' })`。
+
+事件驱动页在挂载时用 `parseScenarioTransferPayload()` 读取并校验（没有政权时视为无效），
+再用 `compactRegimeForEventDrive()` 生成完整的精简国家档案，存入
+`WorldLandTransferPayload.countries` 作为按需详情的数据源，同时把 `剧本名称` / `开局时间`
+存到 `scenarioName` / `scenarioStartTime`。每轮请求时：
+
+- `toBriefCountry()` 生成国家简报（约 1.4 万 tokens / 80 政权）；
+- `matchCountryNamesInText()` 从本轮消息中找出国家名；
+- `toDetailCountry()` 只给提到的国家附加详细档案（约 500 tokens / 国），领土统一压缩成摘要。
+
+该世界包会像普通世界包一样写入存档与快照，因此刷新页面或重新选择归档后仍能恢复；
+读取成功后交接键会被清除。
+
 ---
 
 ### 6. 事件驱动页面 (pages/event-drive)
 
 **路由**: `/pages/event-drive`  
 **用途**: 在世界背景下进行连续多轮对话，推演历史事件发展，支持存档与快照
+
+挂载时会优先读取 `event-drive-scenario-json`（剧本编辑页「发送至推演」），把它转换成
+`countries` 世界包；没有交接数据时再按原来的世界包 / 存档逻辑恢复。剧本来源会在侧栏显示
+「当前剧本」卡片；每轮请求注入国家简报，消息提到具体国家时再追加该国详细档案。
 
 #### 主要功能函数
 
@@ -927,10 +954,11 @@ interface LandData {
    ├─→ 配置政权代表色 / 政体 / 领导人 / 初始国家力量
    ├─→ 放大到 2.4 倍后点击单个地区划入或移出
    ├─→ 导入文章转 JSON 的国家档案
-   └─→ 导出剧本.json
+   ├─→ 导出剧本.json
+   └─→ 发送至推演（写入 event-drive-scenario-json 后跳转）
 
 第6步：事件驱动 (event-drive)
-   ├─→ 确认世界数据已加载
+   ├─→ 确认世界数据或剧本已加载
    ├─→ 多轮对话推演事件
    ├─→ 创建快照存档
    └─→ 导出聊天记录
@@ -965,6 +993,20 @@ interface LandData {
   → 自动保存草稿（localStorage）→ 导出 剧本.json
 ```
 
+### 剧本到事件驱动交接流程
+
+```
+剧本编辑「发送至推演」→ createScenarioTransferPayload
+  → 写入 event-drive-scenario-json + event-drive-fresh-session
+  → router.push(event-drive)
+  → parseScenarioTransferPayload → compactRegimeForEventDrive
+  → WorldLandTransferPayload{ scenarioName, scenarioStartTime, countries }
+  → toBriefCountry 生成国家简报（每轮）
+  → matchCountryNamesInText + toDetailCountry 生成本轮详情
+  → 世界上下文消息（JSON 包成 world.countries）
+  → 存档 / 快照 / 后续对话
+```
+
 ### 事件推演流程
 
 ```
@@ -987,6 +1029,7 @@ interface LandData {
 | 世界生成 | `worldDataDraft`                      | 世界数据草稿               |
 | 剧本编辑 | `scenario-editor-draft`               | 剧本草稿（自动保存）       |
 | 剧本编辑 | `scenario-editor-import`              | 文章转 JSON 的交接数据     |
+| 剧本编辑 | `event-drive-scenario-json`           | 发送至推演的剧本交接数据   |
 | 剧本编辑 | `worldDataDraft`                      | 读取世界生成草稿并转换领土 |
 | 事件驱动 | `event-drive-world-chat-archive-json` | 聊天存档                   |
 | 事件驱动 | `event-drive-snapshot-history-json`   | 快照历史                   |
