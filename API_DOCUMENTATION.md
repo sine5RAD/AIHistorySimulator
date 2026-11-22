@@ -581,8 +581,11 @@ interface WorldLandTransferPayload {
 
 interface EventDriveArchiveEntry {
   world: WorldLandTransferPayload
+  countryIndicators: Record<string, CountryIndicatorData>
   chatInput: string
   chatMessages: ChatMessage[]
+  /** 与这份世界一起保存的时间线；旧存档可能没有。 */
+  timeline: TimelineState | null
   createdAt: string
   updatedAt: string
 }
@@ -593,6 +596,7 @@ interface EventDriveSnapshotEntry {
   world: WorldLandTransferPayload | null
   chatInput: string
   chatMessages: ChatMessage[]
+  timeline: TimelineState | null
   createdAt: string
 }
 ```
@@ -611,11 +615,74 @@ interface EventDriveSnapshotEntry {
 | `event-drive-world-land-json`         | 国土 JSON        |
 | `event-drive-fresh-session`           | 新会话标记       |
 
+> 归档条目与快照条目都额外保存 `timeline`（`TimelineState`），时间线页直接复用，不需要新的存储键。
+
 #### 常量
 
 ```typescript
 const LIVE_SESSION_SNAPSHOT_ID = '__live__' // 表示实时会话
 ```
+
+---
+
+### 7. 时间线页面 (pages/timeline)
+
+**路由**: `/pages/timeline`  
+**用途**: 把事件驱动页产生的指标变动与政权兴亡按时间铺开，展示继承者分叉
+
+页面只读取事件驱动页的当前存档（`readActiveEventDriveSave`：选中的快照优先，其次上次打开的世界键对应的归档条目，最后是当前世界包），不修改任何数据。旧存档没有 `timeline` 字段时，会用当前世界重建一条从第 0 天开始的基线。
+
+#### 数据模型
+
+```typescript
+interface TimelineState {
+  version: 1
+  scenarioName: string
+  startTimeText: string
+  startEpochMs: number | null
+  currentDay: number // 距离开局的天数
+  turn: number // 已执行的时间推进次数
+  initialCountries: TimelineRegimeSeed[]
+  events: TimelineEvent[]
+}
+```
+
+`TimelineEvent.kind`:
+
+| 类型        | 含义                | 画法                     |
+| ----------- | ------------------- | ------------------------ |
+| `indicator` | 三国力指标变化      | 实心圆点                 |
+| `reform`    | 政治制度 / 经济状况 | 菱形                     |
+| `create`    | 政权建立            | 三角                     |
+| `destroy`   | 政权灭亡            | 叉号，有继承者时向下分叉 |
+| `rename`    | 政权更名            | 空心菱形 + 虚线接续      |
+| `transfer`  | 两个政权间领土划转  | 方块                     |
+
+#### 时间推进
+
+`parseTimeAdvanceInstruction(text)` 只接受整条消息就是推进指令：
+`时间推进12年`、`推进时间 3 个月`、`推进7天`（可带「请 / 帮我」和句末标点）。
+日 / 周 / 月 / 年分别换算为 1 / 7 / 30 / 365 天；事件触发、故事与提问不推进时钟。
+指标与政权变更会在推进后的当天写入时间线。
+
+#### 布局
+
+`buildTimelineLayout(state, currentRegimes)` 是纯函数：
+
+- 开局政权与 `create` 事件生成泳道起点；
+- `destroy` 结束泳道；`successors` 非空时为每个继承者生成向下分叉，颜色取继承国代表色；
+- `rename` 用虚线把旧名称接到新名称；
+- 先访问没有父政权的泳道，再深度优先访问继承者子树，保证继承者始终排在父政权下面且相邻；
+- `buildTimelineTicks(startEpochMs, startDay, endDay, maxTicks)` 优先落在真实年 / 月边界，开局时间不可解析时退回「开局 + N 天」。
+
+#### 图表组件
+
+`src/components/timeline-chart/timeline-chart.vue`：
+
+- SVG 渲染，横轴按天映射到像素，纵轴一行一个政权；
+- 滚轮以光标为锚点缩放、拖拽平移、双击 / 「重置视图」恢复完整范围；
+- 事件点悬停时用 HTML 浮层显示时间、事件概述、指标旧值 → 新值、继承国、指令与原因；
+- 分叉线从灭亡点弯向继承者泳道，颜色使用继承国代表色。
 
 ---
 

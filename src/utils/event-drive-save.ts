@@ -2,9 +2,11 @@ import { makeTerritoryKey, normalizeTerritoryCode } from '@/lib/map/territory-co
 import type { GeoFeatureBounds, GeoPosition, WorldMapFeature } from '@/types/geo'
 import type { Area } from '@/types/land'
 import { DEFAULT_REGIME_COLOR } from '@/types/scenario'
+import type { TimelineState } from '@/types/timeline'
 
 import { isRecord } from './country-data'
 import { convertMercatorAreasToLngLat, normalizeAreas, toColorInputValue } from './scenario-data'
+import { normalizeTimelineState } from './timeline'
 import { CODE_LEVELS, type TerritoryCodeLevel } from './territory-summary'
 
 /**
@@ -63,6 +65,8 @@ export interface EventDriveSaveSnapshot {
   source: 'snapshot' | 'archive' | 'package'
   updatedAt: string
   world: EventDriveWorldPayload
+  /** 与这份世界一起保存的时间线；旧存档没有时为 null。 */
+  timeline: TimelineState | null
 }
 
 export interface SaveRegime {
@@ -181,6 +185,7 @@ export function getWorldArchiveKey(payload: EventDriveWorldPayload | null | unde
 interface ArchiveEntryLike {
   world: EventDriveWorldPayload
   updatedAt: string
+  timeline: TimelineState | null
 }
 
 const readArchiveEntries = (
@@ -207,6 +212,7 @@ const readArchiveEntries = (
     entries[worldKey] = {
       world: rawEntry.world as EventDriveWorldPayload,
       updatedAt: readText(rawEntry.updatedAt),
+      timeline: normalizeTimelineState(rawEntry.timeline),
     }
   }
 
@@ -218,6 +224,7 @@ interface SnapshotEntryLike {
   label: string
   world: EventDriveWorldPayload | null
   createdAt: string
+  timeline: TimelineState | null
 }
 
 const readSnapshotEntries = (storage: ReadonlyStorage | null | undefined): SnapshotEntryLike[] => {
@@ -245,6 +252,7 @@ const readSnapshotEntries = (storage: ReadonlyStorage | null | undefined): Snaps
       label: readText(rawEntry.label),
       world: isRecord(rawEntry.world) ? (rawEntry.world as EventDriveWorldPayload) : null,
       createdAt: readText(rawEntry.createdAt),
+      timeline: normalizeTimelineState(rawEntry.timeline),
     })
   }
 
@@ -315,6 +323,7 @@ export function readActiveEventDriveSave(
         source: 'snapshot',
         updatedAt: snapshot.createdAt,
         world: snapshot.world,
+        timeline: snapshot.timeline,
       }
     }
   }
@@ -329,6 +338,7 @@ export function readActiveEventDriveSave(
         source: 'archive',
         updatedAt: entry.updatedAt,
         world: entry.world,
+        timeline: entry.timeline,
       }
     }
   }
@@ -340,6 +350,7 @@ export function readActiveEventDriveSave(
       source: 'package',
       updatedAt: readText(packagePayload.generatedAt),
       world: packagePayload,
+      timeline: null,
     }
   }
 

@@ -564,6 +564,60 @@ describe('批量应用', () => {
   })
 })
 
+describe('结构化变更结果（供时间线使用）', () => {
+  it('建立与灭亡都带落库后的颜色与指标', () => {
+    const { result } = run([
+      {
+        类型: '建立',
+        政权名称: '中华共和国',
+        代表色: '#ffaa00',
+        国家指标: { 政治稳定: 12, 经济发展: 6, 国际影响: 2 },
+        原因: '革命后建国',
+      },
+      { 类型: '灭亡', 政权名称: '中国', 继承: '继承国', 继承国: ['中华共和国'], 原因: '被取代' },
+    ])
+
+    expect(result.appliedChanges).toHaveLength(2)
+    expect(result.appliedChanges[0]).toMatchObject({
+      类型: '建立',
+      政权名称: '中华共和国',
+      代表色: '#ffaa00',
+      国家指标: { 政治稳定: 12, 经济发展: 6, 国际影响: 2 },
+      原因: '革命后建国',
+    })
+    expect(result.appliedChanges[1]).toMatchObject({
+      类型: '灭亡',
+      政权名称: '中国',
+      继承国: ['中华共和国'],
+      代表色: '#d64545',
+      国家指标: { 政治稳定: 10, 经济发展: 20, 国际影响: 30 },
+    })
+  })
+
+  it('领土分配时继承国取真正分到领土的政权', () => {
+    const { result } = run([
+      {
+        类型: '灭亡',
+        政权名称: '中国',
+        继承: '无主',
+        继承国: ['美国'],
+        领土分配: { 美国: { country: ['CHN'] } },
+      },
+    ])
+
+    expect(result.appliedChanges[0]?.继承国).toEqual(['美国'])
+  })
+
+  it('失败的变更不会出现在结构化结果里', () => {
+    const { result } = run([
+      { 类型: '灭亡', 政权名称: '不存在的国家' },
+      { 类型: '建立', 政权名称: '东德' },
+    ])
+
+    expect(result.appliedChanges.map((change) => change.政权名称)).toEqual(['东德'])
+  })
+})
+
 describe('代表色分配', () => {
   it('避开已用的颜色', () => {
     const color = pickRegimeColor(['#d64545', '#3b82f6', '#8a8f98'])

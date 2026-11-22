@@ -78,6 +78,26 @@ export interface RegimeChangeData {
   校验?: string
 }
 
+/**
+ * 一条已经成功应用的政权变更。
+ *
+ * 与原始输入的 `RegimeChangeData` 不同，这里的字段是**落库后的实际值**：
+ * - `代表色` 与 `国家指标` 取变更完成后的颜色 / 指标（灭亡时取灭亡前的值）；
+ * - `继承国` 只保留真正接管了领土的政权，`无主` 灭亡时为空。
+ *
+ * 时间线等模块只消费这个结构，不需要再猜「哪些变更生效了」。
+ */
+export interface AppliedRegimeChange {
+  类型: RegimeChangeKind
+  政权名称: string
+  新名称?: string
+  继承国?: string[]
+  原因?: string
+  日期?: string
+  代表色?: string
+  国家指标?: CountryIndicatorData
+}
+
 /** 允许的变更类型，供解析与校验共用。 */
 export const REGIME_CHANGE_KINDS = ['建立', '灭亡', '更名', '领土'] as const
 

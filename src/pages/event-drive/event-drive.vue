@@ -25,6 +25,15 @@ import {
   findCountryIndex,
   splitAssistantChangePayload,
 } from '@/utils/regime-change'
+import {
+  advanceTimelineClock,
+  createTimelineState,
+  normalizeTimelineState,
+  parseTimeAdvanceInstruction,
+  recordIndicatorChange,
+  recordReformChange,
+  recordRegimeTimelineEvents,
+} from '@/utils/timeline'
 import { CODE_LEVELS, countTerritoryBuckets, readTerritoryBuckets } from '@/utils/territory-summary'
 import {
   MAX_TERRITORY_QUERY_ROUNDS,
@@ -42,7 +51,8 @@ import FloatingCountrySidebar, {
   type FloatingCountrySidebarItem,
 } from '@/components/floating-country-sidebar/floating-country-sidebar.vue'
 import type { CountryEventTriggerChangeData, CountryIndicatorData } from '@/types/country'
-import type { RegimeChangeData, RegimeTerritorySummary } from '@/types/regime'
+import type { AppliedRegimeChange, RegimeChangeData, RegimeTerritorySummary } from '@/types/regime'
+import type { TimelineState } from '@/types/timeline'
 import type { TerritoryCodeLevel } from '@/utils/territory-summary'
 
 type ChatRole = 'user' | 'assistant'
@@ -112,6 +122,8 @@ interface EventDriveArchiveEntry {
   countryIndicators: Record<string, CountryIndicatorData>
   chatInput: string
   chatMessages: ChatMessage[]
+  /** 与这份世界一起保存的时间线。 */
+  timeline: TimelineState | null
   createdAt: string
   updatedAt: string
 }
@@ -122,6 +134,7 @@ interface EventDriveSnapshotEntry {
   world: WorldLandTransferPayload | null
   chatInput: string
   chatMessages: ChatMessage[]
+  timeline: TimelineState | null
   createdAt: string
 }
 
@@ -147,6 +160,8 @@ const hiddenPromptMessages = ref<PromptMessage[]>([])
 const worldContextMessage = ref<PromptMessage | null>(null)
 const activeWorldPayload = ref<WorldLandTransferPayload | null>(null)
 const activeCountryIndicators = ref<Record<string, CountryIndicatorData>>({})
+/** 当前世界的时间线；与存档、快照一起持久化。 */
+const activeTimeline = ref<TimelineState | null>(null)
 const activeWorldKey = ref('')
 const isSending = ref(false)
 const errorText = ref('')
@@ -448,6 +463,10 @@ const goToSetting = () => {
   router.push({ name: 'setting' })
 }
 
+const goToTimeline = () => {
+  router.push({ name: 'timeline' })
+}
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === 'object' && !Array.isArray(value)
 
@@ -528,6 +547,111 @@ const extractCountryIndicatorsFromWorld = (
   return indicators
 }
 
+/* ------------------------------------------------------------------ *
+ * 时间线
+ *
+ * 每轮推演都会把「指标变动 / 政权建立 / 灭亡 / 更名 / 领土划转」写进一条
+ * 世界内时间线；时间线随归档、快照与导出 JSON 一起持久化，
+ * 时间线页只读取它，不参与推演。
+ * ------------------------------------------------------------------ */
+
+const buildTimelineForPayload = (payload: WorldLandTransferPayload): TimelineState =>
+  createTimelineState({
+    countries: getCountriesFromPayload(payload),
+    colorMap: getCountryColorMapFromPayload(payload),
+    indicators: activeCountryIndicators.value,
+    scenarioName: payload.scenarioName,
+    startTimeText: payload.scenarioStartTime?.trim() || payload.generatedAt?.trim() || '',
+  })
+
+/** 保证当前世界有一条时间线；旧存档没有时间线字段时按当前世界补一条。 */
+const ensureActiveTimeline = (): TimelineState => {
+  if (!activeTimeline.value) {
+    activeTimeline.value = activeWorldPayload.value
+      ? buildTimelineForPayload(activeWorldPayload.value)
+      : createTimelineState()
+  }
+
+  return activeTimeline.value
+}
+
+const recordIndicatorTimelineEvent = (input: {
+  country: string
+  indicators: CountryIndicatorData
+  previous?: CountryIndicatorData
+  description?: string
+  source: 'ai' | 'manual'
+  trigger?: string
+  politicalSystemChange?: string
+  economicStatusChange?: string
+}) => {
+  if (!activeWorldPayload.value) {
+    return
+  }
+
+  const state = ensureActiveTimeline()
+  const color = getCountryColorMapFromPayload(activeWorldPayload.value)[input.country]
+
+  activeTimeline.value = recordIndicatorChange(state, { ...input, color })
+}
+
+const recordReformTimelineEvent = (input: {
+  country: string
+  label: string
+  value: string
+  previousValue?: string
+  source: 'ai' | 'manual'
+  trigger?: string
+}) => {
+  if (!activeWorldPayload.value) {
+    return
+  }
+
+  const state = ensureActiveTimeline()
+  const color = getCountryColorMapFromPayload(activeWorldPayload.value)[input.country]
+
+  activeTimeline.value = recordReformChange(state, { ...input, color })
+}
+
+const recordRegimeTimelineChanges = (
+  result: { applied: string[]; appliedChanges: AppliedRegimeChange[] },
+  source: 'ai' | 'manual',
+  trigger: string,
+) => {
+  if (!activeWorldPayload.value || !result.appliedChanges.length) {
+    return
+  }
+
+  const state = ensureActiveTimeline()
+
+  activeTimeline.value = recordRegimeTimelineEvents(state, {
+    changes: result.appliedChanges,
+    messages: result.applied,
+    source,
+    trigger,
+  })
+}
+
+/** 三项指标完全没变时不记事件点，避免时间线被空转的回合塞满。 */
+const hasIndicatorChange = (
+  previous: CountryIndicatorData | undefined,
+  next: CountryIndicatorData,
+): boolean =>
+  !previous ||
+  previous.政治稳定 !== next.政治稳定 ||
+  previous.经济发展 !== next.经济发展 ||
+  previous.国际影响 !== next.国际影响
+
+/** 「时间推进 N 日/月/年」在本地推进世界内时钟；事件触发只记录不推进。 */
+const advanceGameClock = (days: number) => {
+  if (!activeWorldPayload.value || days <= 0) {
+    return
+  }
+
+  const state = ensureActiveTimeline()
+  activeTimeline.value = advanceTimelineClock(state, days)
+}
+
 const getWorldArchiveKey = (payload: WorldLandTransferPayload | null) => {
   if (!payload) {
     return ''
@@ -596,6 +720,7 @@ const readEventDriveArchive = (): EventDriveArchive => {
         ),
         chatInput: typeof entryValue.chatInput === 'string' ? entryValue.chatInput : '',
         chatMessages,
+        timeline: normalizeTimelineState(entryValue.timeline),
         createdAt:
           typeof entryValue.createdAt === 'string'
             ? entryValue.createdAt
@@ -651,6 +776,7 @@ const readSnapshotHistory = (): EventDriveSnapshotHistory => {
                   typeof message.content === 'string',
               )
             : [],
+          timeline: normalizeTimelineState(entry.timeline),
           createdAt:
             typeof entry.createdAt === 'string' ? entry.createdAt : new Date().toISOString(),
         }
@@ -681,6 +807,9 @@ const createSnapshotFromCurrentState = (): EventDriveSnapshotEntry => {
     world: activeWorldPayload.value ? JSON.parse(JSON.stringify(activeWorldPayload.value)) : null,
     chatInput: chatInput.value,
     chatMessages: JSON.parse(JSON.stringify(chatMessages.value)) as ChatMessage[],
+    timeline: activeTimeline.value
+      ? (JSON.parse(JSON.stringify(activeTimeline.value)) as TimelineState)
+      : null,
     createdAt,
   }
 }
@@ -764,6 +893,7 @@ const clearActiveWorldContext = () => {
   window.sessionStorage.removeItem(WORLD_PACKAGE_TRANSFER_KEY)
   activeWorldPayload.value = null
   activeCountryIndicators.value = {}
+  activeTimeline.value = null
   activeWorldKey.value = ''
   worldContextMessage.value = null
 }
@@ -771,6 +901,8 @@ const clearActiveWorldContext = () => {
 const applySnapshotEntry = (snapshot: EventDriveSnapshotEntry) => {
   if (snapshot.world) {
     setActiveWorldContext(snapshot.world)
+    activeTimeline.value =
+      normalizeTimelineState(snapshot.timeline) ?? buildTimelineForPayload(snapshot.world)
   } else {
     clearActiveWorldContext()
   }
@@ -807,6 +939,7 @@ const saveCurrentWorldArchive = () => {
     countryIndicators: { ...activeCountryIndicators.value },
     chatInput: chatInput.value,
     chatMessages: chatMessages.value,
+    timeline: activeTimeline.value,
     createdAt: existingEntry?.createdAt ?? now,
     updatedAt: now,
   }
@@ -835,6 +968,7 @@ const removeCurrentWorldArchive = (archiveKey: string) => {
 const setActiveWorldContext = (payload: WorldLandTransferPayload) => {
   activeWorldPayload.value = payload
   activeCountryIndicators.value = extractCountryIndicatorsFromWorld(payload)
+  activeTimeline.value = buildTimelineForPayload(payload)
   activeWorldKey.value = getWorldArchiveKey(payload)
   refreshWorldContextMessage()
 
@@ -849,6 +983,8 @@ const setActiveWorldContext = (payload: WorldLandTransferPayload) => {
 const applyArchiveEntry = (worldKey: string, entry: EventDriveArchiveEntry) => {
   setActiveWorldContext(entry.world)
   activeCountryIndicators.value = resolveCountryIndicators(entry.countryIndicators, entry.world)
+  activeTimeline.value =
+    normalizeTimelineState(entry.timeline) ?? buildTimelineForPayload(entry.world)
   activeWorldKey.value = worldKey
   chatMessages.value = entry.chatMessages
   chatInput.value = entry.chatInput
@@ -920,6 +1056,7 @@ const extractImportedArchive = (payload: unknown): EventDriveArchive => {
       ),
       chatInput: typeof entryValue.chatInput === 'string' ? entryValue.chatInput : '',
       chatMessages,
+      timeline: normalizeTimelineState(entryValue.timeline),
       createdAt:
         typeof entryValue.createdAt === 'string' ? entryValue.createdAt : new Date().toISOString(),
       updatedAt:
@@ -1323,6 +1460,8 @@ const submitChatContent = async (
   const modelOverride = options?.modelOverride
   const trimmedContent = content.trim()
   const hasHiddenPrompt = hiddenPromptMessages.value.length > 0
+  // 只有「时间推进」会推进世界内时钟；事件触发、故事与提问只记录在当天。
+  const timeAdvance = parseTimeAdvanceInstruction(trimmedContent)
 
   if (isSending.value || (!trimmedContent && !hasHiddenPrompt)) {
     return false
@@ -1398,9 +1537,14 @@ const submitChatContent = async (
         content: response,
       })
 
+      // 时间推进先把世界内时钟推到本轮末尾，再记录本轮产生的变化点。
+      if (timeAdvance) {
+        advanceGameClock(timeAdvance.days)
+      }
+
       // 尝试解析并应用 AI 在回复中包含的指标变更 JSON（如果存在）
       try {
-        await handleAssistantResponse(response)
+        await handleAssistantResponse(response, trimmedContent)
       } catch (error) {
         console.error('处理 AI 回复中的指标变更时发生错误', error)
       }
@@ -1576,15 +1720,25 @@ const handleEditStat = async (payload: FloatingCountrySidebarEditStatPayload) =>
     }
 
     const current = activeCountryIndicators.value[countryName]
+    const nextIndicators: CountryIndicatorData = {
+      政治稳定: current?.政治稳定 ?? 0,
+      经济发展: current?.经济发展 ?? 0,
+      国际影响: current?.国际影响 ?? 0,
+    }
+    nextIndicators[indicatorKey] = parsed
     activeCountryIndicators.value = {
       ...activeCountryIndicators.value,
-      [countryName]: {
-        政治稳定: current?.政治稳定 ?? 0,
-        经济发展: current?.经济发展 ?? 0,
-        国际影响: current?.国际影响 ?? 0,
-        [indicatorKey]: parsed,
-      },
+      [countryName]: nextIndicators,
     }
+
+    recordIndicatorTimelineEvent({
+      country: countryName,
+      indicators: nextIndicators,
+      previous: current,
+      description: `手动调整：${label}`,
+      source: 'manual',
+      trigger: '国家列表手动调整',
+    })
 
     // 同步到 activeWorldPayload
     try {
@@ -1612,11 +1766,13 @@ const handleEditStat = async (payload: FloatingCountrySidebarEditStatPayload) =>
     // 文本字段 — 直接写入国家记录
     const countries = getCountriesFromPayload(activeWorldPayload.value)
     let found = false
+    let previousValue = ''
 
     for (const country of countries) {
       if (!isRecord(country)) continue
       const name = typeof country.国家名称 === 'string' ? country.国家名称.trim() : ''
       if (name === countryName) {
+        previousValue = typeof country[label] === 'string' ? String(country[label]) : ''
         country[label] = newValue
         found = true
         break
@@ -1627,6 +1783,15 @@ const handleEditStat = async (payload: FloatingCountrySidebarEditStatPayload) =>
       errorText.value = `未找到国家 ${countryName}。`
       return
     }
+
+    recordReformTimelineEvent({
+      country: countryName,
+      label,
+      value: newValue,
+      previousValue,
+      source: 'manual',
+      trigger: '国家列表手动调整',
+    })
 
     refreshWorldContextMessage()
     saveCurrentWorldArchive()
@@ -1684,6 +1849,7 @@ const applyManualRegimeChange = async (changes: RegimeChangeData[]): Promise<boo
 
   activeCountryIndicators.value = result.indicators
   writeCountryColorMap(payload, result.colorMap)
+  recordRegimeTimelineChanges(result, 'manual', '手动政权变更')
   refreshWorldContextMessage()
   saveCurrentWorldArchive()
 
@@ -1953,7 +2119,7 @@ watch(
 )
 
 /** 应用 AI 回复里的政权变更；这里不允许动玩家操控的政权。 */
-const applyAssistantRegimeChanges = (regimeChanges: readonly unknown[]) => {
+const applyAssistantRegimeChanges = (regimeChanges: readonly unknown[], trigger = '') => {
   const payload = activeWorldPayload.value
 
   if (!payload || !regimeChanges.length) {
@@ -1970,6 +2136,7 @@ const applyAssistantRegimeChanges = (regimeChanges: readonly unknown[]) => {
 
   activeCountryIndicators.value = result.indicators
   writeCountryColorMap(payload, result.colorMap)
+  recordRegimeTimelineChanges(result, 'ai', trigger)
 
   for (const line of result.applied) {
     chatMessages.value.push({ role: 'assistant', content: line })
@@ -1987,7 +2154,7 @@ const applyAssistantRegimeChanges = (regimeChanges: readonly unknown[]) => {
   }
 }
 
-const handleAssistantResponse = async (responseText: string) => {
+const handleAssistantResponse = async (responseText: string, trigger = '') => {
   const jsonText = extractJsonFromText(responseText)
 
   if (!jsonText) {
@@ -2074,15 +2241,16 @@ const handleAssistantResponse = async (responseText: string) => {
 
     // 获取旧值以便对比
     const old = activeCountryIndicators.value[countryName]
+    const nextIndicators: CountryIndicatorData = {
+      政治稳定: indicators.政治稳定,
+      经济发展: indicators.经济发展,
+      国际影响: indicators.国际影响,
+    }
 
     // 应用变更到内存
     activeCountryIndicators.value = {
       ...activeCountryIndicators.value,
-      [countryName]: {
-        政治稳定: indicators.政治稳定,
-        经济发展: indicators.经济发展,
-        国际影响: indicators.国际影响,
-      },
+      [countryName]: nextIndicators,
     }
 
     // 同步到 activeWorldPayload 中对应国家的 国家指标 字段（如果存在该国家）
@@ -2094,11 +2262,7 @@ const handleAssistantResponse = async (responseText: string) => {
 
         const name = typeof country.国家名称 === 'string' ? country.国家名称.trim() : ''
         if (name === countryName) {
-          country.国家指标 = {
-            政治稳定: indicators.政治稳定,
-            经济发展: indicators.经济发展,
-            国际影响: indicators.国际影响,
-          }
+          country.国家指标 = { ...nextIndicators }
 
           if (politicalSystemChange) {
             country.政治制度 = politicalSystemChange
@@ -2136,10 +2300,24 @@ const handleAssistantResponse = async (responseText: string) => {
       role: 'assistant',
       content: `已应用指标变更：${countryName}；${desc || '无描述'}；${oldSummary}；${newSummary}${extraSummary ? `；${extraSummary}` : ''}`,
     })
+
+    // 时间线只记「国家指标」的变化点；制度类文字变化放进同一个事件说明。
+    if (hasIndicatorChange(old, nextIndicators) || politicalSystemChange || economicStatusChange) {
+      recordIndicatorTimelineEvent({
+        country: countryName,
+        indicators: nextIndicators,
+        previous: old,
+        description: desc,
+        source: 'ai',
+        trigger,
+        politicalSystemChange,
+        economicStatusChange,
+      })
+    }
   }
 
   // 政权变更要在持久化之前落库，这样存档与简报拿到的是同一份世界。
-  applyAssistantRegimeChanges(regimeChanges)
+  applyAssistantRegimeChanges(regimeChanges, trigger)
 
   // 持久化
   refreshWorldContextMessage()
@@ -2475,6 +2653,7 @@ const selectedSnapshotLabel = computed(() => {
               <button class="ghost-button" type="button" @click="exportEventDriveArchive">
                 导出存档
               </button>
+              <button class="ghost-button" type="button" @click="goToTimeline">时间线</button>
               <button class="ghost-button" type="button" @click="resetChat">重置世界</button>
               <button class="ghost-button" type="button" @click="reinjectPrompt">
                 重新注入提示词

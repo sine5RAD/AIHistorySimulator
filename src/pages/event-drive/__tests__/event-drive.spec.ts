@@ -745,6 +745,152 @@ describe('推演中增删政权', () => {
   })
 })
 
+describe('时间线记录', () => {
+  const ARCHIVE_KEY = 'event-drive-world-chat-archive-json'
+  const SCENARIO_ARCHIVE_KEY = '剧本 · 1947 开局 · 1947-01-01T00:00'
+
+  interface ArchivedTimeline {
+    currentDay?: number
+    turn?: number
+    startEpochMs?: number | null
+    initialCountries?: Array<Record<string, unknown>>
+    events?: Array<Record<string, unknown>>
+  }
+
+  const seedScenarioTransfer = () => {
+    window.sessionStorage.setItem(SCENARIO_TRANSFER_KEY, JSON.stringify(scenarioTransferPayload))
+    window.sessionStorage.setItem(EVENT_DRIVE_FRESH_SESSION_KEY, 'true')
+  }
+
+  const readArchivedTimeline = (): ArchivedTimeline | undefined => {
+    const archive = JSON.parse(window.localStorage.getItem(ARCHIVE_KEY) ?? '{}') as Record<
+      string,
+      { timeline?: ArchivedTimeline }
+    >
+
+    return archive[SCENARIO_ARCHIVE_KEY]?.timeline
+  }
+
+  const sendMessage = async (text: string) => {
+    await wrapper!.get('textarea.composer-input').setValue(text)
+    await wrapper!.get('.composer-footer .primary-button').trigger('click')
+    await flushPromises()
+  }
+
+  it('时间推进会推进世界内时钟，并把指标变动记在推进后的时间点', async () => {
+    seedScenarioTransfer()
+    submitPreparedPromptMock.mockResolvedValue(
+      JSON.stringify([
+        {
+          国家名称: '中国',
+          描述: '第一个五年计划完成，经济回升',
+          国家指标: { 政治稳定: 15, 经济发展: 25, 国际影响: 30 },
+        },
+      ]),
+    )
+
+    wrapper = await mountPage()
+    await sendMessage('时间推进1年')
+
+    const timeline = readArchivedTimeline()
+
+    expect(timeline?.currentDay).toBe(365)
+    expect(timeline?.turn).toBe(1)
+    expect(timeline?.startEpochMs).toBe(new Date(1947, 0, 1).getTime())
+    expect(timeline?.initialCountries?.map((country) => country.国家名称)).toEqual(['中国', '美国'])
+    expect(timeline?.events).toEqual([
+      expect.objectContaining({
+        kind: 'indicator',
+        country: '中国',
+        day: 365,
+        turn: 1,
+        source: 'ai',
+        trigger: '时间推进1年',
+        summary: expect.stringContaining('第一个五年计划完成'),
+      }),
+    ])
+    expect(timeline?.events?.[0]?.previousIndicators).toEqual({
+      政治稳定: 10,
+      经济发展: 20,
+      国际影响: 30,
+    })
+  })
+
+  it('事件触发不推进时间，同时记录指标变动与政权更替', async () => {
+    seedScenarioTransfer()
+    submitPreparedPromptMock.mockResolvedValue(
+      JSON.stringify({
+        指标变更: [
+          {
+            国家名称: '中国',
+            描述: '边境冲突升级，社会动荡',
+            国家指标: { 政治稳定: 5, 经济发展: 15, 国际影响: 25 },
+          },
+        ],
+        政权变更: [
+          {
+            类型: '建立',
+            政权名称: '中华共和国',
+            代表色: '#ffaa00',
+            国家指标: { 政治稳定: 8, 经济发展: 8, 国际影响: 8 },
+            原因: '革命后建国',
+          },
+          {
+            类型: '灭亡',
+            政权名称: '中国',
+            继承: '继承国',
+            继承国: ['中华共和国'],
+            原因: '被中华共和国取代',
+          },
+        ],
+      }),
+    )
+
+    wrapper = await mountPage()
+    await sendMessage('中国发生政变')
+
+    const timeline = readArchivedTimeline()
+
+    expect(timeline?.currentDay).toBe(0)
+    expect(timeline?.turn).toBe(0)
+    expect(timeline?.events?.map((event) => [event.kind, event.country])).toEqual([
+      ['indicator', '中国'],
+      ['create', '中华共和国'],
+      ['destroy', '中国'],
+    ])
+    expect(timeline?.events?.[1]?.color).toBe('#ffaa00')
+    expect(timeline?.events?.[2]?.successors).toEqual(['中华共和国'])
+    expect(timeline?.events?.[2]?.color).toBe('#d64545')
+  })
+
+  it('手动灭亡政权也会写入时间线，无继承者时没有 successors', async () => {
+    seedScenarioTransfer()
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+
+    wrapper = await mountPage()
+
+    const form = wrapper.get('[aria-label="灭亡政权"]')
+    await form.findAll('select')[0]!.setValue('中国')
+    await form.trigger('submit')
+    await flushPromises()
+
+    const timeline = readArchivedTimeline()
+
+    expect(timeline?.events).toEqual([
+      expect.objectContaining({
+        kind: 'destroy',
+        country: '中国',
+        source: 'manual',
+        trigger: '手动政权变更',
+      }),
+    ])
+    expect(timeline?.events?.[0]?.successors).toBeUndefined()
+    expect(timeline?.events?.[0]?.summary).toContain('无继承者')
+
+    confirmSpy.mockRestore()
+  })
+})
+
 describe('领土划转面板', () => {
   const ARCHIVE_KEY = 'event-drive-world-chat-archive-json'
   const SCENARIO_ARCHIVE_KEY = '剧本 · 分区测试 · 1947-01-01T00:00'

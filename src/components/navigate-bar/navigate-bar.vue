@@ -56,6 +56,9 @@ onBeforeUnmount(() => {
       <router-link to="/pages/event-drive">
         <span class="nav-item">事件驱动</span>
       </router-link>
+      <router-link to="/pages/timeline">
+        <span class="nav-item">时间线</span>
+      </router-link>
       <router-link to="/pages/world-map">
         <span class="nav-item">世界地图</span>
       </router-link>

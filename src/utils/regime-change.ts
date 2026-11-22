@@ -1,5 +1,6 @@
 import type { CountryIndicatorData } from '@/types/country'
 import type {
+  AppliedRegimeChange,
   RegimeChangeData,
   RegimeChangeKind,
   RegimeTerritorySummary,
@@ -69,6 +70,8 @@ export interface RegimeChangeValidation {
 export interface RegimeChangeResult {
   /** 已应用的变更摘要，可直接推送到聊天窗口。 */
   applied: string[]
+  /** 与 `applied` 一一对应的结构化变更，供时间线等模块使用。 */
+  appliedChanges: AppliedRegimeChange[]
   /** 未应用的原因。 */
   failed: string[]
   /** 应用成功但需要玩家注意的事项（例如新政权没有领土）。 */
@@ -733,6 +736,119 @@ const CHANGE_APPLIERS: Record<
   领土: applyTransfer,
 }
 
+const readCountryIndicators = (
+  record: Record<string, unknown> | null,
+): CountryIndicatorData | undefined => {
+  if (!record) {
+    return undefined
+  }
+
+  const value = isRecord(record.国家指标)
+    ? record.国家指标
+    : isRecord(record.初始国家力量)
+      ? record.初始国家力量
+      : null
+
+  return value ? normalizeCountryIndicators(value) : undefined
+}
+
+/** 实际接管了领土的继承国；「无主」灭亡返回空数组。 */
+const resolveSuccessors = (change: RegimeChangeData, name: string): string[] => {
+  const allocationNames = Object.keys(change.领土分配 ?? {})
+    .map((target) => target.trim())
+    .filter((target) => target.length > 0)
+
+  if (allocationNames.length) {
+    return Array.from(new Set(allocationNames))
+  }
+
+  if (change.继承 !== '继承国') {
+    return []
+  }
+
+  const inheritors = (change.继承国 ?? [])
+    .map((inheritor) => inheritor.trim())
+    .filter((inheritor) => inheritor.length > 0 && inheritor !== name)
+
+  return Array.from(new Set(inheritors))
+}
+
+interface PreChangeSnapshot {
+  colorMap: Record<string, string>
+  indicators: Record<string, CountryIndicatorData>
+  record: Record<string, unknown> | null
+}
+
+interface PostChangeSnapshot {
+  colorMap: Record<string, string>
+  indicators: Record<string, CountryIndicatorData>
+}
+
+/**
+ * 把一条已生效的变更整理成时间线可用的结构。
+ *
+ * 灭亡与更名要取「变更前」的颜色与指标（政权已经不在表里了），
+ * 建立与领土划转取「变更后」的结果。
+ */
+const describeAppliedChange = (
+  change: RegimeChangeData,
+  before: PreChangeSnapshot,
+  after: PostChangeSnapshot,
+): AppliedRegimeChange => {
+  const name = change.政权名称.trim()
+  const applied: AppliedRegimeChange = {
+    类型: change.类型,
+    政权名称: name,
+  }
+  const nextName = change.新名称?.trim()
+
+  if (nextName) {
+    applied.新名称 = nextName
+  }
+
+  const reason = change.原因?.trim()
+
+  if (reason) {
+    applied.原因 = reason
+  }
+
+  const dateText = change.日期?.trim()
+
+  if (dateText) {
+    applied.日期 = dateText
+  }
+
+  if (change.类型 === '灭亡') {
+    const successors = resolveSuccessors(change, name)
+
+    if (successors.length) {
+      applied.继承国 = successors
+    }
+  }
+
+  const beforeColor = before.colorMap[name] ?? (before.record ? readText(before.record.代表色) : '')
+  const beforeIndicators = before.indicators[name] ?? readCountryIndicators(before.record)
+  const targetName = change.类型 === '更名' && nextName ? nextName : name
+  const afterColor = after.colorMap[targetName] ?? beforeColor
+  const afterIndicators = after.indicators[targetName] ?? beforeIndicators
+
+  const color =
+    change.类型 === '建立' || change.类型 === '领土' ? afterColor : beforeColor || afterColor
+
+  if (color) {
+    applied.代表色 = color
+  }
+
+  const indicators =
+    change.类型 === '灭亡' || change.类型 === '更名' ? beforeIndicators : afterIndicators
+
+  if (indicators) {
+    applied.国家指标 = { ...indicators }
+  }
+
+  return applied
+}
+
 /**
  * 按顺序应用一批政权变更。
  *
@@ -755,6 +871,7 @@ export function applyRegimeChanges(
     nameIndex: options.nameIndex ?? {},
   }
   const applied: string[] = []
+  const appliedChanges: AppliedRegimeChange[] = []
   const failed: string[] = []
   const createdNames: string[] = []
   // 世界本身没有领土数据时（手绘世界、纯文本剧本），不该抱怨"没有领土"。
@@ -779,17 +896,32 @@ export function applyRegimeChanges(
       continue
     }
 
+    const changeName = change.政权名称.trim()
+    const recordIndex = findCountryIndex(context.countries, changeName)
+    const before: PreChangeSnapshot = {
+      colorMap: { ...context.colorMap },
+      indicators: { ...context.indicators },
+      record: recordIndex >= 0 ? asCountry(context.countries[recordIndex]) : null,
+    }
+
     if (change.类型 === '建立') {
-      createdNames.push(change.政权名称.trim())
+      createdNames.push(changeName)
     }
 
     applied.push(CHANGE_APPLIERS[change.类型](change, context))
+    appliedChanges.push(
+      describeAppliedChange(change, before, {
+        colorMap: context.colorMap,
+        indicators: context.indicators,
+      }),
+    )
   }
 
   const warnings = collectTerritoryWarnings(context.countries, createdNames, hadTerritory)
 
   return {
     applied,
+    appliedChanges,
     failed,
     warnings,
     indicators: context.indicators,
