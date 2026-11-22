@@ -110,3 +110,27 @@ export function extractJsonFromText(text: string): string | null {
 
   return null
 }
+
+/**
+ * 从模型回复里去掉提取到的变更 JSON，只留下叙述文字。
+ *
+ * 事件触发的 JSON 是给程序读的，不该原样贴进对话框；
+ * 如果模型在 JSON 前后还写了说明，这里保留说明、去掉 JSON 与空代码块。
+ */
+export function stripJsonFromText(text: string, jsonText: string | null): string {
+  if (!jsonText) {
+    return text.trim()
+  }
+
+  let cleaned = text
+  const index = cleaned.indexOf(jsonText)
+
+  if (index >= 0) {
+    cleaned = `${cleaned.slice(0, index)}${cleaned.slice(index + jsonText.length)}`
+  }
+
+  return cleaned
+    .replace(/```(?:json)?\s*```/gi, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}

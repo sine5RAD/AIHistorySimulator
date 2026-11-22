@@ -771,6 +771,15 @@ describe('时间线记录', () => {
     return archive[SCENARIO_ARCHIVE_KEY]?.timeline
   }
 
+  const readArchivedCountries = (): Array<Record<string, unknown>> => {
+    const archive = JSON.parse(window.localStorage.getItem(ARCHIVE_KEY) ?? '{}') as Record<
+      string,
+      { world?: { countries?: Array<Record<string, unknown>> } }
+    >
+
+    return archive[SCENARIO_ARCHIVE_KEY]?.world?.countries ?? []
+  }
+
   const sendMessage = async (text: string) => {
     await wrapper!.get('textarea.composer-input').setValue(text)
     await wrapper!.get('.composer-footer .primary-button').trigger('click')
@@ -861,6 +870,134 @@ describe('时间线记录', () => {
     expect(timeline?.events?.[1]?.color).toBe('#ffaa00')
     expect(timeline?.events?.[2]?.successors).toEqual(['中华共和国'])
     expect(timeline?.events?.[2]?.color).toBe('#d64545')
+  })
+
+  it('每轮把当前世界内时间附给 AI，方便推断事件日期', async () => {
+    seedScenarioTransfer()
+    submitPreparedPromptMock.mockResolvedValue('好的')
+
+    wrapper = await mountPage()
+    await sendMessage('时间推进1年')
+
+    const prepared = submitPreparedPromptMock.mock.calls[0]?.[0] as {
+      messages: Array<{ role: string; content: string }>
+    }
+    const context = prepared.messages.find((message) =>
+      message.content.includes('【当前世界内时间】'),
+    )
+
+    expect(context?.content).toContain('1947-01-01')
+    expect(context?.content).toContain('第 0 回合')
+    expect(context?.content).toContain('本轮指令对应的时间范围')
+  })
+
+  it('精简 JSON：按数值增减应用，时间进入时间线，原始 JSON 不显示', async () => {
+    seedScenarioTransfer()
+    submitPreparedPromptMock.mockResolvedValue(
+      JSON.stringify([
+        {
+          国家: '中国',
+          时间: '1948-03-15',
+          描述: '边境冲突升级，社会动荡',
+          数值增减: { 政治稳定: 5, 经济发展: -3, 国际影响: 2 },
+        },
+      ]),
+    )
+
+    wrapper = await mountPage()
+    await sendMessage('中国发生政变')
+
+    expect(wrapper.text()).toContain(
+      '已应用指标变更：中国（1948-03-15）；边境冲突升级，社会动荡；政治稳定 +5、经济发展 -3、国际影响 +2',
+    )
+    expect(wrapper.text()).not.toContain('数值增减')
+    expect(wrapper.text()).not.toContain('```')
+
+    expect(
+      readArchivedCountries().find((country) => country.国家名称 === '中国')?.国家指标,
+    ).toEqual({
+      政治稳定: 15,
+      经济发展: 17,
+      国际影响: 32,
+    })
+
+    expect(readArchivedTimeline()?.events).toEqual([
+      expect.objectContaining({
+        kind: 'indicator',
+        country: '中国',
+        day: 439,
+        dateText: '1948-03-15',
+        trigger: '中国发生政变',
+      }),
+    ])
+  })
+
+  it('时间推进的叙述保留，附带的 JSON 不显示', async () => {
+    seedScenarioTransfer()
+    const changePayload = {
+      指标变更: [
+        {
+          国家: '中国',
+          时间: '1948-06-01',
+          描述: '战后重建推进',
+          数值增减: { 政治稳定: 2, 经济发展: 4, 国际影响: 0 },
+        },
+      ],
+    }
+
+    submitPreparedPromptMock.mockResolvedValue(
+      `1948 年春，局势逐步稳定。\n\n\`\`\`json\n${JSON.stringify(changePayload)}\n\`\`\``,
+    )
+
+    wrapper = await mountPage()
+    await sendMessage('时间推进1年')
+
+    expect(wrapper.text()).toContain('1948 年春，局势逐步稳定。')
+    expect(wrapper.text()).toContain('已应用指标变更：中国（1948-06-01）')
+    expect(wrapper.text()).not.toContain('```')
+    expect(wrapper.text()).not.toContain('数值增减')
+
+    expect(readArchivedTimeline()?.events?.[0]).toMatchObject({
+      day: 517,
+      dateText: '1948-06-01',
+    })
+  })
+
+  it('政权变更的时间决定时间线分叉时间', async () => {
+    seedScenarioTransfer()
+    submitPreparedPromptMock.mockResolvedValue(
+      JSON.stringify({
+        指标变更: [],
+        政权变更: [
+          {
+            类型: '建立',
+            政权名称: '中华共和国',
+            时间: '1948-03-15',
+            代表色: '#ffaa00',
+            国家指标: { 政治稳定: 8, 经济发展: 8, 国际影响: 8 },
+          },
+          {
+            类型: '灭亡',
+            政权名称: '中国',
+            时间: '1948-03-15',
+            继承: '继承国',
+            继承国: ['中华共和国'],
+            原因: '被中华共和国取代',
+          },
+        ],
+      }),
+    )
+
+    wrapper = await mountPage()
+    await sendMessage('中国发生政变')
+
+    expect(wrapper.text()).toContain('【1948-03-15】已建立政权：中华共和国')
+    expect(
+      readArchivedTimeline()?.events?.map((event) => [event.kind, event.day, event.dateText]),
+    ).toEqual([
+      ['create', 439, '1948-03-15'],
+      ['destroy', 439, '1948-03-15'],
+    ])
   })
 
   it('手动灭亡政权也会写入时间线，无继承者时没有 successors', async () => {

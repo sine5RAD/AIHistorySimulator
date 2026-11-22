@@ -56,10 +56,22 @@ export interface CountryIndicatorData {
   国际影响: number
 }
 
+/**
+ * AI 返回的单条国家指标变更。
+ *
+ * 新格式只要求「国家 / 时间 / 描述 / 数值增减」：
+ * - `数值增减` 是本次事件的增量，客户端会用当前值相加并裁剪到 -100 ~ 100；
+ * - `国家名称`、`国家指标` 等旧字段只为兼容旧提示词与旧回复保留。
+ */
 export interface CountryEventTriggerChangeData {
-  国家名称: string
-  描述: string
-  国家指标: CountryIndicatorData
+  国家?: string
+  国家名称?: string
+  时间?: string
+  描述?: string
+  /** 本次事件的增量：政治稳定、经济发展、国际影响。 */
+  数值增减?: CountryIndicatorData
+  /** 旧格式：变更后的绝对值。 */
+  国家指标?: CountryIndicatorData
   政治制度改变?: string
   经济状况改变?: string
   校验?: string
@@ -68,7 +80,7 @@ export interface CountryEventTriggerChangeData {
 export interface Party {
   名称: string
   简介: string
-  主要人物: Record<string, string>//姓名，种族
+  主要人物: Record<string, string> //姓名，种族
 }
 
 export interface CountryData {

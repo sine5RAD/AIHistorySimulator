@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { extractJsonFromText } from '../ai-json'
+import { extractJsonFromText, stripJsonFromText } from '../ai-json'
 
 const polishChange = [
   {
@@ -62,5 +62,32 @@ describe('extractJsonFromText', () => {
     expect(extractJsonFromText('这是一段普通叙述，没有变更。')).toBeNull()
     expect(extractJsonFromText('')).toBeNull()
     expect(extractJsonFromText('[{"国家名称":"波兰共和国"')).toBeNull()
+  })
+})
+
+describe('stripJsonFromText', () => {
+  const payload = [
+    {
+      国家: '波兰',
+      时间: '1948-03-15',
+      描述: '工人党完成统一选举',
+      数值增减: { 政治稳定: 5, 经济发展: 3, 国际影响: -2 },
+    },
+  ]
+  const jsonText = JSON.stringify(payload)
+
+  it('纯 JSON 或纯代码块会变成空字符串', () => {
+    expect(stripJsonFromText(jsonText, jsonText)).toBe('')
+    expect(stripJsonFromText(`\`\`\`json\n${jsonText}\n\`\`\``, jsonText)).toBe('')
+  })
+
+  it('保留 JSON 前后的叙述，并去掉空的代码块', () => {
+    const text = `1948 年春，局势趋稳。\n\n\`\`\`json\n${jsonText}\n\`\`\`\n\n后续将观察经济恢复。`
+
+    expect(stripJsonFromText(text, jsonText)).toBe('1948 年春，局势趋稳。\n\n后续将观察经济恢复。')
+  })
+
+  it('没有 JSON 时只做首尾去空白', () => {
+    expect(stripJsonFromText('  一段叙述  ', null)).toBe('一段叙述')
   })
 })

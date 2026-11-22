@@ -18,6 +18,7 @@ import {
   recordIndicatorChange,
   recordReformChange,
   recordRegimeTimelineEvents,
+  resolveTimelineEventDay,
 } from '../timeline'
 
 const indicators = (政治稳定: number, 经济发展: number, 国际影响: number) => ({
@@ -61,6 +62,20 @@ describe('解析开局时间', () => {
     expect(formatGameDate(slash, 0)).toBe('1947-03-05')
   })
 
+  it('支持只有年或年-月的日期', () => {
+    const year = parseTimelineStartTime('1948')
+    expect(year).not.toBeNull()
+    expect(formatGameDate(year, 0)).toBe('1948-01-01')
+
+    const month = parseTimelineStartTime('1948-03')
+    expect(month).not.toBeNull()
+    expect(formatGameDate(month, 0)).toBe('1948-03-01')
+
+    const chineseMonth = parseTimelineStartTime('1948年3月')
+    expect(chineseMonth).not.toBeNull()
+    expect(formatGameDate(chineseMonth, 0)).toBe('1948-03-01')
+  })
+
   it('解析不了或日期不存在时返回 null', () => {
     expect(parseTimelineStartTime('')).toBeNull()
     expect(parseTimelineStartTime('很久以前')).toBeNull()
@@ -96,6 +111,82 @@ describe('解析时间推进指令', () => {
     expect(parseTimeAdvanceInstruction('请推进时间 2 年。')).toMatchObject({
       days: 2 * DAYS_PER_YEAR,
     })
+  })
+})
+
+describe('AI 事件时间', () => {
+  it('把具体日期换算成距离开局的天数', () => {
+    const start = parseTimelineStartTime('1947-01-01T00:00')
+
+    expect(resolveTimelineEventDay(start, '1948-03-15')).toBe(439)
+    expect(resolveTimelineEventDay(start, '1947-01-10')).toBe(9)
+    expect(resolveTimelineEventDay(start, '1947-01')).toBe(0)
+    expect(resolveTimelineEventDay(start, '1946-12-01')).toBe(0)
+    expect(resolveTimelineEventDay(start, '不是日期')).toBeNull()
+    expect(resolveTimelineEventDay(null, '1948-03-15')).toBeNull()
+  })
+
+  it('指标变动优先使用 AI 时间，而不是回合时钟', () => {
+    let state = advanceTimelineClock(createState(), 365)
+
+    state = recordIndicatorChange(state, {
+      country: '甲国',
+      indicators: indicators(15, 18, 35),
+      previous: indicators(10, 20, 30),
+      source: 'ai',
+      timeText: '1948-03-15',
+    })
+
+    expect(state.currentDay).toBe(365)
+    expect(state.events[0]).toMatchObject({
+      kind: 'indicator',
+      day: 439,
+      dateText: '1948-03-15',
+    })
+  })
+
+  it('政权变更按 时间 / 日期 定位灭亡与继承分叉', () => {
+    let state = advanceTimelineClock(createState(), 500)
+
+    state = recordRegimeTimelineEvents(state, {
+      changes: [
+        {
+          类型: '建立',
+          政权名称: '丁国',
+          时间: '1948-03-15',
+          代表色: '#c2417d',
+          国家指标: indicators(5, 5, 5),
+        },
+        {
+          类型: '灭亡',
+          政权名称: '甲国',
+          时间: '1948-03-15',
+          继承国: ['丁国'],
+          代表色: '#d64545',
+        },
+      ],
+      messages: ['已建立政权：丁国', '已灭亡政权：甲国（丁国 继承全部领土）'],
+      source: 'ai',
+    })
+
+    const layout = buildTimelineLayout(state)
+
+    expect(findLane(layout, '丁国')?.startDay).toBe(439)
+    expect(findLane(layout, '甲国')?.endDay).toBe(439)
+    expect(layout.forks).toEqual([expect.objectContaining({ kind: 'succession', day: 439 })])
+  })
+
+  it('没有 AI 时间时回退到当前回合', () => {
+    let state = advanceTimelineClock(createState(), 20)
+
+    state = recordRegimeTimelineEvents(state, {
+      changes: [{ 类型: '灭亡', 政权名称: '丙国' }],
+      messages: ['已灭亡政权：丙国（领土变为无主）'],
+      source: 'ai',
+    })
+
+    expect(state.events[0]?.day).toBe(20)
+    expect(state.events[0]?.dateText).toBeUndefined()
   })
 })
 

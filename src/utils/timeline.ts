@@ -107,6 +107,19 @@ export function parseTimelineStartTime(value: string): number | null {
     )
   }
 
+  // AI 有时只给到月或年：按该月 / 该年的第一天定位。
+  const isoMonthMatch = /^(\d{1,4})-(\d{1,2})$/.exec(text)
+
+  if (isoMonthMatch) {
+    return buildLocalTimestamp(Number(isoMonthMatch[1]), Number(isoMonthMatch[2]), 1)
+  }
+
+  const yearOnlyMatch = /^(\d{1,4})$/.exec(text)
+
+  if (yearOnlyMatch) {
+    return buildLocalTimestamp(Number(yearOnlyMatch[1]), 1, 1)
+  }
+
   const chineseMatch =
     /(?:公元\s*)?(\d{1,4})\s*年(?:\s*(\d{1,2})\s*月(?:\s*(\d{1,2})\s*[日号])?)?/.exec(text)
 
@@ -125,6 +138,12 @@ export function parseTimelineStartTime(value: string): number | null {
 
   if (slashMatch) {
     return buildLocalTimestamp(Number(slashMatch[1]), Number(slashMatch[2]), Number(slashMatch[3]))
+  }
+
+  const slashMonthMatch = /^(\d{1,4})[/.](\d{1,2})$/.exec(text)
+
+  if (slashMonthMatch) {
+    return buildLocalTimestamp(Number(slashMonthMatch[1]), Number(slashMonthMatch[2]), 1)
   }
 
   return null
@@ -149,13 +168,24 @@ export function formatDayOffsetLabel(day: number): string {
   return `开局 + ${value} 天`
 }
 
+/** 把日期换算成 UTC 日序号，跨夏令时也不会把日历日期算错。 */
+const startOfDayUtc = (date: Date): number =>
+  Date.UTC(date.getFullYear(), date.getMonth(), date.getDate())
+
+/** 在本地日历上增加天数，保留原来的时分秒。 */
+const addCalendarDays = (epochMs: number, days: number): Date => {
+  const date = new Date(epochMs)
+  date.setDate(date.getDate() + days)
+  return date
+}
+
 /** 把距离开局的天数换算成日期文本；开局时间不可解析时退回相对刻度。 */
 export function formatGameDate(startEpochMs: number | null, day: number): string {
   if (startEpochMs === null) {
     return formatDayOffsetLabel(day)
   }
 
-  const date = new Date(startEpochMs + Math.max(0, day) * MS_PER_DAY)
+  const date = addCalendarDays(startEpochMs, Math.max(0, Math.round(day)))
 
   return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`
 }
@@ -163,6 +193,38 @@ export function formatGameDate(startEpochMs: number | null, day: number): string
 /** 事件发生时间，供时间线提示框展示。 */
 export function formatTimelineEventTime(startEpochMs: number | null, event: TimelineEvent): string {
   return formatGameDate(startEpochMs, event.day)
+}
+
+/**
+ * 把 AI 给出的具体事件日期换算成距离开局的天数。
+ *
+ * 返回 null 表示无法解析（或开局时间本身不可解析），调用方应退回回合时钟。
+ * 早于开局的日期统一压到第 0 天，避免时间线出现负坐标。
+ */
+export function resolveTimelineEventDay(
+  startEpochMs: number | null,
+  dateText: string,
+): number | null {
+  if (startEpochMs === null) {
+    return null
+  }
+
+  const text = readText(dateText)
+
+  if (!text) {
+    return null
+  }
+
+  const eventEpoch = parseTimelineStartTime(text)
+
+  if (eventEpoch === null) {
+    return null
+  }
+
+  const start = new Date(startEpochMs)
+  const event = new Date(eventEpoch)
+
+  return Math.max(0, Math.round((startOfDayUtc(event) - startOfDayUtc(start)) / MS_PER_DAY))
 }
 
 /** 指标数值展示：整数不带小数点，小数保留两位。 */
@@ -537,7 +599,8 @@ export interface IndicatorTimelineInput {
   source: 'ai' | 'manual'
   color?: string
   trigger?: string
-  dateText?: string
+  /** AI 返回的事件具体日期；能解析时事件点落在该日期，否则落在当前回合。 */
+  timeText?: string
   politicalSystemChange?: string
   economicStatusChange?: string
 }
@@ -553,6 +616,8 @@ export function recordIndicatorChange(
     return state
   }
 
+  const timeText = readText(input.timeText)
+  const eventDay = resolveTimelineEventDay(state.startEpochMs, timeText) ?? state.currentDay
   const indicators = normalizeCountryIndicators(input.indicators)
   const previous = input.previous ? normalizeCountryIndicators(input.previous) : undefined
   const description = readText(input.description) || '国家指标变动'
@@ -572,7 +637,7 @@ export function recordIndicatorChange(
     id: createEventId(state, 'indicator', country),
     kind: 'indicator',
     country,
-    day: state.currentDay,
+    day: eventDay,
     turn: state.turn,
     source: input.source,
     summary: `${description}（${details.join('；')}）`,
@@ -593,9 +658,8 @@ export function recordIndicatorChange(
     event.trigger = trigger
   }
 
-  const dateText = readText(input.dateText)
-  if (dateText) {
-    event.dateText = dateText
+  if (timeText) {
+    event.dateText = timeText
   }
 
   return appendEvents(state, [event])
@@ -677,11 +741,13 @@ export function recordRegimeTimelineEvents(
 
     const message = readText(input.messages?.[index])
     const color = readText(change.代表色)
+    const timeText = readText(change.时间) || readText(change.日期)
+    const eventDay = resolveTimelineEventDay(state.startEpochMs, timeText) ?? state.currentDay
     const base: TimelineEvent = {
       id: '',
       kind: 'create',
       country: name,
-      day: state.currentDay,
+      day: eventDay,
       turn: state.turn,
       source: input.source,
       summary: message || `${change.类型}：${name}`,
@@ -700,9 +766,8 @@ export function recordRegimeTimelineEvents(
       base.reason = reason
     }
 
-    const dateText = readText(change.日期)
-    if (dateText) {
-      base.dateText = dateText
+    if (timeText) {
+      base.dateText = timeText
     }
 
     if (trigger) {
@@ -888,6 +953,7 @@ export function buildTimelineLayout(
 ): TimelineLayout {
   const lanes: TimelineLane[] = []
   const activeLanes = new Map<string, TimelineLane>()
+  const latestLaneByName = new Map<string, TimelineLane>()
   let laneCounter = 0
 
   const createLane = (
@@ -914,6 +980,7 @@ export function buildTimelineLayout(
     laneCounter += 1
     lanes.push(lane)
     activeLanes.set(name, lane)
+    latestLaneByName.set(name, lane)
     return lane
   }
 
@@ -1002,6 +1069,7 @@ export function buildTimelineLayout(
       default: {
         const lane =
           activeLanes.get(name) ??
+          latestLaneByName.get(name) ??
           createLane(name, event.color, 0, event.previousIndicators ?? event.indicators)
 
         lane.events.push(event)
@@ -1141,7 +1209,7 @@ const formatTickLabel = (startEpochMs: number | null, day: number, step: number)
     return formatDayOffsetLabel(day)
   }
 
-  const date = new Date(startEpochMs + day * MS_PER_DAY)
+  const date = addCalendarDays(startEpochMs, day)
   const year = String(date.getFullYear())
 
   if (step >= DAYS_PER_YEAR) {
@@ -1177,9 +1245,10 @@ const buildCalendarTicks = (
   maxTicks: number,
 ): TimelineTick[] => {
   const span = endDay - startDay
-  const dayOf = (date: Date) => Math.round((date.getTime() - startEpochMs) / MS_PER_DAY)
-  const startYear = new Date(startEpochMs + startDay * MS_PER_DAY).getFullYear()
-  const lastYear = new Date(startEpochMs + endDay * MS_PER_DAY).getFullYear()
+  const startDayUtc = startOfDayUtc(new Date(startEpochMs))
+  const dayOf = (date: Date) => Math.round((startOfDayUtc(date) - startDayUtc) / MS_PER_DAY)
+  const startYear = addCalendarDays(startEpochMs, startDay).getFullYear()
+  const lastYear = addCalendarDays(startEpochMs, endDay).getFullYear()
   const candidates: TimelineTick[] = []
 
   if (span >= 730) {

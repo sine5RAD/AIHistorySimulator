@@ -54,8 +54,10 @@ export interface RegimeChangeData {
   /** 仅「领土」使用：领土的出让方。 */
   来源政权?: string
   原因?: string
-  /** 推演出的日期文本，写进聊天记录，将来可接年表。 */
+  /** 推演出的日期文本；时间线用它定位事件发生的具体时间。 */
   日期?: string
+  /** 事件实际发生日期；优先于 `日期`，格式如 `1948-03-15`。 */
+  时间?: string
   政体?: string
   政治制度?: string
   经济状况?: string
@@ -93,6 +95,9 @@ export interface AppliedRegimeChange {
   新名称?: string
   继承国?: string[]
   原因?: string
+  /** 事件实际发生日期，时间线用它定位分叉 / 灭亡点。 */
+  时间?: string
+  /** 旧字段，兼容仍然只写 `日期` 的回复。 */
   日期?: string
   代表色?: string
   国家指标?: CountryIndicatorData

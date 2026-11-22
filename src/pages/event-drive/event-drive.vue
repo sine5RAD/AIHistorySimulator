@@ -16,7 +16,7 @@ import {
   type EventDriveActionKind,
 } from '@/utils/event-drive-actions'
 import { submitPreparedPrompt } from '@/utils/submit-commition'
-import { extractJsonFromText } from '@/utils/ai-json'
+import { extractJsonFromText, stripJsonFromText } from '@/utils/ai-json'
 import { matchCountryNamesInText } from '@/utils/country-mentions'
 import { buildBriefCountries, buildDetailCountries } from '@/utils/event-drive-context'
 import { compactRegimeForEventDrive, estimateTextTokens } from '@/utils/scenario-ai'
@@ -28,6 +28,7 @@ import {
 import {
   advanceTimelineClock,
   createTimelineState,
+  formatGameDate,
   normalizeTimelineState,
   parseTimeAdvanceInstruction,
   recordIndicatorChange,
@@ -50,7 +51,7 @@ import FloatingCountrySidebar, {
   type FloatingCountrySidebarEditStatPayload,
   type FloatingCountrySidebarItem,
 } from '@/components/floating-country-sidebar/floating-country-sidebar.vue'
-import type { CountryEventTriggerChangeData, CountryIndicatorData } from '@/types/country'
+import type { CountryIndicatorData } from '@/types/country'
 import type { AppliedRegimeChange, RegimeChangeData, RegimeTerritorySummary } from '@/types/regime'
 import type { TimelineState } from '@/types/timeline'
 import type { TerritoryCodeLevel } from '@/utils/territory-summary'
@@ -470,6 +471,8 @@ const goToTimeline = () => {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === 'object' && !Array.isArray(value)
 
+const readText = (value: unknown): string => (typeof value === 'string' ? value.trim() : '')
+
 const getPlayerControlledCountryNames = (payload: WorldLandTransferPayload | null): string[] =>
   getCountriesFromPayload(payload)
     .filter((country): country is Record<string, unknown> => isRecord(country))
@@ -582,6 +585,8 @@ const recordIndicatorTimelineEvent = (input: {
   description?: string
   source: 'ai' | 'manual'
   trigger?: string
+  /** AI 返回的事件具体日期；手动修改时为空，落在当前回合。 */
+  timeText?: string
   politicalSystemChange?: string
   economicStatusChange?: string
 }) => {
@@ -1532,21 +1537,21 @@ const submitChatContent = async (
     }
 
     if (!suppressAssistantReply) {
-      chatMessages.value.push({
-        role: 'assistant',
-        content: response,
-      })
-
       // 时间推进先把世界内时钟推到本轮末尾，再记录本轮产生的变化点。
       if (timeAdvance) {
         advanceGameClock(timeAdvance.days)
       }
 
-      // 尝试解析并应用 AI 在回复中包含的指标变更 JSON（如果存在）
+      // 解析并应用 AI 返回的变更；变更 JSON 本身由 handleAssistantResponse
+      // 转成「国家 / 时间 / 描述 / 数值增减」摘要，不再原样显示在对话框里。
       try {
         await handleAssistantResponse(response, trimmedContent)
       } catch (error) {
         console.error('处理 AI 回复中的指标变更时发生错误', error)
+        chatMessages.value.push({
+          role: 'assistant',
+          content: '处理 AI 返回的变更时发生错误，未应用任何变更。',
+        })
       }
     }
 
@@ -1593,8 +1598,28 @@ const resetChat = async () => {
   await scrollToBottom()
 }
 
+/** 每轮附上当前世界内时间，方便 AI 把事件“时间”写在本轮推进范围内。 */
+const buildTimelineContextMessage = (): PromptMessage | null => {
+  const timeline = activeTimeline.value
+
+  if (!activeWorldPayload.value || !timeline) {
+    return null
+  }
+
+  const currentLabel = formatGameDate(timeline.startEpochMs, timeline.currentDay)
+
+  return {
+    role: 'user',
+    content: [
+      `【当前世界内时间】${currentLabel}（距开局 ${timeline.currentDay} 天，第 ${timeline.turn} 回合）。`,
+      '如果本轮需要输出“时间”字段，请把事件日期写在本轮指令对应的时间范围内（“时间推进”即推进后的范围）；没有给出具体时间时按历史、政治与军事逻辑推断一个合理日期，不要省略。',
+    ].join('\n'),
+  }
+}
+
 const buildPreparedPrompt = (modelOverride?: string, trailingMessages: PromptMessage[] = []) => {
   const detailMessage = buildScenarioDetailMessageForCurrentRequest()
+  const timelineContextMessage = buildTimelineContextMessage()
 
   return {
     provider: selectedProvider.value,
@@ -1605,6 +1630,7 @@ const buildPreparedPrompt = (modelOverride?: string, trailingMessages: PromptMes
         content: systemPrompt,
       },
       ...(worldContextMessage.value ? [worldContextMessage.value] : []),
+      ...(timelineContextMessage ? [timelineContextMessage] : []),
       ...(detailMessage ? [detailMessage] : []),
       ...hiddenPromptMessages.value,
       ...chatMessages.value.map((message) => ({
@@ -2138,8 +2164,13 @@ const applyAssistantRegimeChanges = (regimeChanges: readonly unknown[], trigger 
   writeCountryColorMap(payload, result.colorMap)
   recordRegimeTimelineChanges(result, 'ai', trigger)
 
-  for (const line of result.applied) {
-    chatMessages.value.push({ role: 'assistant', content: line })
+  for (const [index, line] of result.applied.entries()) {
+    const timeText = result.appliedChanges[index]?.时间 ?? result.appliedChanges[index]?.日期 ?? ''
+
+    chatMessages.value.push({
+      role: 'assistant',
+      content: timeText ? `【${timeText}】${line}` : line,
+    })
   }
 
   if (result.failed.length) {
@@ -2154,12 +2185,94 @@ const applyAssistantRegimeChanges = (regimeChanges: readonly unknown[], trigger 
   }
 }
 
+const INDICATOR_CHANGE_KEYS = ['政治稳定', '经济发展', '国际影响'] as const
+
+const formatIndicatorDelta = (value: number): string => {
+  const text = formatIndicatorValue(value)
+
+  return value > 0 ? `+${text}` : text
+}
+
+const clampIndicatorValue = (value: number): number =>
+  Math.round(Math.max(-100, Math.min(100, value)) * 100) / 100
+
+/**
+ * 新格式 `数值增减` 用当前值加增量；旧格式 `国家指标` 直接取变更后的绝对值。
+ * 返回 null 表示两个字段都无效。
+ */
+const resolveNextIndicators = (
+  entry: Record<string, unknown>,
+  previous: CountryIndicatorData | undefined,
+): { next: CountryIndicatorData; delta: CountryIndicatorData } | null => {
+  const deltaValue = entry.数值增减
+  const absoluteValue = entry.国家指标
+  const base = previous ?? { 政治稳定: 0, 经济发展: 0, 国际影响: 0 }
+
+  if (isCountryIndicatorData(deltaValue)) {
+    if (!INDICATOR_CHANGE_KEYS.every((key) => Number.isFinite(deltaValue[key]))) {
+      return null
+    }
+
+    const next: CountryIndicatorData = {
+      政治稳定: clampIndicatorValue(base.政治稳定 + deltaValue.政治稳定),
+      经济发展: clampIndicatorValue(base.经济发展 + deltaValue.经济发展),
+      国际影响: clampIndicatorValue(base.国际影响 + deltaValue.国际影响),
+    }
+
+    return {
+      next,
+      delta: {
+        政治稳定: next.政治稳定 - base.政治稳定,
+        经济发展: next.经济发展 - base.经济发展,
+        国际影响: next.国际影响 - base.国际影响,
+      },
+    }
+  }
+
+  if (isCountryIndicatorData(absoluteValue)) {
+    if (!INDICATOR_CHANGE_KEYS.every((key) => Number.isFinite(absoluteValue[key]))) {
+      return null
+    }
+
+    const next: CountryIndicatorData = {
+      政治稳定: clampIndicatorValue(absoluteValue.政治稳定),
+      经济发展: clampIndicatorValue(absoluteValue.经济发展),
+      国际影响: clampIndicatorValue(absoluteValue.国际影响),
+    }
+
+    return {
+      next,
+      delta: {
+        政治稳定: next.政治稳定 - base.政治稳定,
+        经济发展: next.经济发展 - base.经济发展,
+        国际影响: next.国际影响 - base.国际影响,
+      },
+    }
+  }
+
+  return null
+}
+
 const handleAssistantResponse = async (responseText: string, trigger = '') => {
+  const displayResponse = (text: string) => {
+    const trimmed = text.trim()
+
+    if (trimmed) {
+      chatMessages.value.push({ role: 'assistant', content: trimmed })
+    }
+  }
+
   const jsonText = extractJsonFromText(responseText)
 
   if (!jsonText) {
+    displayResponse(responseText)
+
     // 只有明确像变更 JSON 的回复才警告，普通叙述不打扰用户。
-    if (responseText.includes('"国家指标"') || /```(?:json)?/i.test(responseText)) {
+    if (
+      responseText.includes('"数值增减"') ||
+      responseText.includes('"国家指标"') ||
+      /```(?:json)?/i.test(responseText)
+    ) {
       chatMessages.value.push({
         role: 'assistant',
         content: '警告：没有找到完整可解析的 JSON，未应用任何变更。',
@@ -2174,6 +2287,7 @@ const handleAssistantResponse = async (responseText: string, trigger = '') => {
     parsed = JSON.parse(jsonText)
   } catch (error) {
     console.error('无法解析 AI 返回的 JSON:', error)
+    displayResponse(responseText)
     chatMessages.value.push({
       role: 'assistant',
       content: '警告：解析 AI 返回的 JSON 失败，未应用任何变更。',
@@ -2185,12 +2299,24 @@ const handleAssistantResponse = async (responseText: string, trigger = '') => {
   const entries: unknown[] = indicatorEntries
   // 普通叙述里也可能出现示例 JSON；只有带变更字段的内容才进入应用流程。
   const looksLikeChangePayload = entries.some(
-    (entry) => isRecord(entry) && ('国家指标' in entry || '国家名称' in entry || '描述' in entry),
+    (entry) =>
+      isRecord(entry) &&
+      ('数值增减' in entry ||
+        '国家指标' in entry ||
+        '国家' in entry ||
+        '国家名称' in entry ||
+        '描述' in entry),
   )
 
   if (!looksLikeChangePayload && !regimeChanges.length) {
+    // 不是变更 JSON（例如提问时夹带的示例），照常显示原文。
+    displayResponse(responseText)
     return
   }
+
+  // 变更 JSON 只给程序读：对话框里只保留 JSON 前后的叙述，变更本身
+  // 用下面的「国家 / 时间 / 描述 / 数值增减」摘要展示。
+  displayResponse(stripJsonFromText(responseText, jsonText))
 
   const applied: string[] = []
   const failed: string[] = []
@@ -2201,51 +2327,27 @@ const handleAssistantResponse = async (responseText: string, trigger = '') => {
       continue
     }
 
-    const countryName = typeof entry.国家名称 === 'string' ? entry.国家名称.trim() : ''
-    const desc = typeof entry.描述 === 'string' ? entry.描述.trim() : ''
-    const indicators = (entry as unknown as CountryEventTriggerChangeData).国家指标
-    const politicalSystemChange =
-      typeof entry.政治制度改变 === 'string' && entry.政治制度改变.trim()
-        ? entry.政治制度改变.trim()
-        : ''
-    const economicStatusChange =
-      typeof entry.经济状况改变 === 'string' && entry.经济状况改变.trim()
-        ? entry.经济状况改变.trim()
-        : ''
+    const countryName = readText(entry.国家) || readText(entry.国家名称)
+    const desc = readText(entry.描述)
+    const timeText = readText(entry.时间) || readText(entry.日期)
+    const politicalSystemChange = readText(entry.政治制度改变)
+    const economicStatusChange = readText(entry.经济状况改变)
 
     if (!countryName) {
-      failed.push('无效条目：缺少 国家名称')
-      continue
-    }
-
-    if (!isCountryIndicatorData(indicators)) {
-      failed.push(`国家 ${countryName} 的 国家指标 字段无效或缺失`)
-      continue
-    }
-
-    // 本地校验：数值有限且为 number
-    const checkProblems: string[] = []
-
-    for (const key of ['政治稳定', '经济发展', '国际影响'] as const) {
-      const v = (indicators as unknown as Record<string, number>)[key]
-
-      if (!Number.isFinite(v)) {
-        checkProblems.push(`${key} 不是有限数字`)
-      }
-    }
-
-    if (checkProblems.length) {
-      failed.push(`${countryName} 校验失败：${checkProblems.join('; ')}`)
+      failed.push('无效条目：缺少 国家')
       continue
     }
 
     // 获取旧值以便对比
     const old = activeCountryIndicators.value[countryName]
-    const nextIndicators: CountryIndicatorData = {
-      政治稳定: indicators.政治稳定,
-      经济发展: indicators.经济发展,
-      国际影响: indicators.国际影响,
+    const resolved = resolveNextIndicators(entry, old)
+
+    if (!resolved) {
+      failed.push(`国家 ${countryName} 的 数值增减 字段无效或缺失`)
+      continue
     }
+
+    const nextIndicators = resolved.next
 
     // 应用变更到内存
     activeCountryIndicators.value = {
@@ -2280,28 +2382,17 @@ const handleAssistantResponse = async (responseText: string, trigger = '') => {
 
     applied.push(countryName)
 
-    // 记录变更明细推送到聊天以便用户可见
-    const oldSummary = old
-      ? `旧值: 政治稳定=${formatIndicatorValue(old.政治稳定)}, 经济发展=${formatIndicatorValue(old.经济发展)}, 国际影响=${formatIndicatorValue(old.国际影响)}`
-      : '旧值: 无'
-
-    const newSummary = `新值: 政治稳定=${formatIndicatorValue(indicators.政治稳定)}, 经济发展=${formatIndicatorValue(
-      indicators.经济发展,
-    )}, 国际影响=${formatIndicatorValue(indicators.国际影响)}`
-
-    const extraSummary = [
-      politicalSystemChange ? `政治制度=${politicalSystemChange}` : '',
-      economicStatusChange ? `经济状况=${economicStatusChange}` : '',
-    ]
-      .filter(Boolean)
-      .join('；')
+    // 对话框只展示国家、时间、描述与数值增减，不展示原始 JSON 或旧值/新值字段。
+    const deltaText = INDICATOR_CHANGE_KEYS.map(
+      (key) => `${key} ${formatIndicatorDelta(resolved.delta[key])}`,
+    ).join('、')
 
     chatMessages.value.push({
       role: 'assistant',
-      content: `已应用指标变更：${countryName}；${desc || '无描述'}；${oldSummary}；${newSummary}${extraSummary ? `；${extraSummary}` : ''}`,
+      content: `已应用指标变更：${countryName}${timeText ? `（${timeText}）` : ''}；${desc || '无描述'}；${deltaText}`,
     })
 
-    // 时间线只记「国家指标」的变化点；制度类文字变化放进同一个事件说明。
+    // 时间线以 AI 给出的具体时间为准；没有给时间时才落在回合时钟上。
     if (hasIndicatorChange(old, nextIndicators) || politicalSystemChange || economicStatusChange) {
       recordIndicatorTimelineEvent({
         country: countryName,
@@ -2310,6 +2401,7 @@ const handleAssistantResponse = async (responseText: string, trigger = '') => {
         description: desc,
         source: 'ai',
         trigger,
+        timeText,
         politicalSystemChange,
         economicStatusChange,
       })

@@ -316,7 +316,16 @@ export function normalizeRegimeChange(value: unknown): RegimeChangeData | null {
     change.来源政权 = transferSource
   }
 
-  for (const key of ['原因', '日期', '政体', '政治制度', '经济状况', '代表色', '校验'] as const) {
+  for (const key of [
+    '原因',
+    '日期',
+    '时间',
+    '政体',
+    '政治制度',
+    '经济状况',
+    '代表色',
+    '校验',
+  ] as const) {
     const text = readText(value[key])
 
     if (text) {
@@ -812,10 +821,11 @@ const describeAppliedChange = (
     applied.原因 = reason
   }
 
-  const dateText = change.日期?.trim()
+  const timeText = change.时间?.trim() || change.日期?.trim()
 
-  if (dateText) {
-    applied.日期 = dateText
+  if (timeText) {
+    applied.时间 = timeText
+    applied.日期 = timeText
   }
 
   if (change.类型 === '灭亡') {
